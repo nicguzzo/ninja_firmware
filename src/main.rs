@@ -9,7 +9,9 @@ use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::select::{select, Either};
 use embassy_stm32::gpio::{Level, Output, Speed, Input, Pull, AnyPin,Pin};
-use embassy_stm32::time::Hertz;
+use embassy_stm32::pwm::Channel;
+use embassy_stm32::pwm::simple_pwm::{SimplePwm,PwmPin};
+use embassy_stm32::time::{Hertz, khz};
 use embassy_stm32::usb::{Driver, Instance};
 use embassy_stm32::{interrupt, Config};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -45,6 +47,23 @@ async fn main(spawner: Spawner) {
     
     let mut led = Output::new(p.PC13.degrade(), Level::High, Speed::Low);
 
+    /*
+    //RGB LED 
+    let ch1 = PwmPin::new_ch1(p.PA0);
+    let ch2 = PwmPin::new_ch2(p.PA1);
+    let ch3 = PwmPin::new_ch3(p.PA2);
+    let mut led_rgb_pwm = SimplePwm::new(p.TIM2, Some(ch1), Some(ch2), Some(ch3), None, khz(100));*/
+        
+    /*
+    let max = led_rgb_pwm.get_max_duty();
+    let max_1=max-1;
+    led_rgb_pwm.enable(Channel::Ch1);
+    led_rgb_pwm.enable(Channel::Ch2);
+    led_rgb_pwm.enable(Channel::Ch3);
+    led_rgb_pwm.set_duty(Channel::Ch1, max_1);//b
+    led_rgb_pwm.set_duty(Channel::Ch2, 0);//g
+    led_rgb_pwm.set_duty(Channel::Ch3, max_1);//r*/
+
     let row0 = Output::new(p.PB5.degrade(), Level::Low, Speed::Low); 
     let row1 = Output::new(p.PB6.degrade(),Level::Low, Speed::Low);
     let row2 = Output::new(p.PB7.degrade(),Level::Low, Speed::Low);
@@ -65,8 +84,15 @@ async fn main(spawner: Spawner) {
         [keys::KEY_TAB, keys::KEY_Q,keys::KEY_W,keys::KEY_E,keys::KEY_R,keys::KEY_T ],
         [keys::KEY_TAB, keys::KEY_A,keys::KEY_S,keys::KEY_D,keys::KEY_F,keys::KEY_G ],
         [keys::KEY_TAB, keys::KEY_Z,keys::KEY_X,keys::KEY_C,keys::KEY_V,keys::KEY_B ],
-        [0,0,0                       ,keys::KEY_COMMA,keys::KEY_DOT,keys::KEY_SPACE ],
+        [0,0,0         ,keys::KEY_RIGHTCTRL,keys::KEY_RIGHTSHIFT,keys::KEY_RIGHTALT ],
     ];    
+
+    let mut keys_left:[[u8; COLS]; ROWS]=[
+        [keys::KEY_Y, keys::KEY_U,keys::KEY_I,keys::KEY_O,keys::KEY_P,keys::KEY_BACKSPACE ],
+        [keys::KEY_H, keys::KEY_J,keys::KEY_K,keys::KEY_L,keys::KEY_F,keys::KEY_ENTER ],
+        [keys::KEY_N, keys::KEY_M,keys::KEY_X,keys::KEY_LEFTBRACE,keys::KEY_RIGHTBRACE,keys::KEY_APOSTROPHE ],
+        [0,0,0                       ,keys::KEY_COMMA,keys::KEY_DOT,keys::KEY_SPACE ],
+    ];
 
     let mut rows:[Output<'static,AnyPin>; ROWS]=[row0,row1,row2,row3];
     let cols:[Input <'static,AnyPin>; COLS]=[col0,col1,col2,col3,col4,col5];
@@ -169,7 +195,10 @@ async fn main(spawner: Spawner) {
                                     break;
                                 }
                             }
-                            if pressed {
+                            if pressed {                                
+                                //led_rgb_pwm.set_duty(Channel::Ch1, max_1);//b
+                                //led_rgb_pwm.set_duty(Channel::Ch2, max_1);//g
+                                //led_rgb_pwm.set_duty(Channel::Ch3, 0);//r
                                 let report = KeyboardReport {
                                     keycodes: report_lim6,
                                     leds: 0,
@@ -194,6 +223,9 @@ async fn main(spawner: Spawner) {
                                 }
                             }
                             if released {
+                                //led_rgb_pwm.set_duty(Channel::Ch1, max_1);//b
+                                //led_rgb_pwm.set_duty(Channel::Ch2, 0);//g
+                                //led_rgb_pwm.set_duty(Channel::Ch3, max_1);//r
                                 let report = KeyboardReport {
                                     keycodes: report_lim6,
                                     leds: 0,
