@@ -8,7 +8,9 @@ use defmt::{panic, *};
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::select::{select, Either};
+use embassy_stm32::dma::NoDma;
 use embassy_stm32::gpio::{Level, Output, Speed, Input, Pull, AnyPin,Pin};
+use embassy_stm32::i2c::{I2c, TimeoutI2c, Error};
 use embassy_stm32::pwm::Channel;
 use embassy_stm32::pwm::simple_pwm::{SimplePwm,PwmPin};
 use embassy_stm32::time::{Hertz, khz};
@@ -16,7 +18,7 @@ use embassy_stm32::usb::{Driver, Instance};
 use embassy_stm32::{interrupt, Config};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Timer,Instant};
 use embassy_usb::class::hid::{HidReaderWriter, ReportId, RequestHandler, State};
 use embassy_usb::control::OutResponse;
 use embassy_usb::{Builder, DeviceStateHandler};
@@ -26,6 +28,12 @@ use {defmt_rtt as _, panic_probe as _};
 
 const COLS:usize=6;
 const ROWS:usize=4;
+const LAYERS:usize=2;
+//const DEBOUNCE:u64=5;
+
+const SECONDARY_KB_ADDRESS: u8 = 0x08;
+const WHOAMI: u8 = 0x0F;
+const SECONDARY_KB_N_BYTES:usize = 3;
 
 static SUSPENDED: AtomicBool = AtomicBool::new(false);
 mod keys;
@@ -47,29 +55,24 @@ async fn main(spawner: Spawner) {
     
     let mut led = Output::new(p.PC13.degrade(), Level::High, Speed::Low);
 
-    /*
+    
     //RGB LED 
-    let ch1 = PwmPin::new_ch1(p.PA0);
-    let ch2 = PwmPin::new_ch2(p.PA1);
-    let ch3 = PwmPin::new_ch3(p.PA2);
-    let mut led_rgb_pwm = SimplePwm::new(p.TIM2, Some(ch1), Some(ch2), Some(ch3), None, khz(100));*/
-        
-    /*
-    let max = led_rgb_pwm.get_max_duty();
-    let max_1=max-1;
-    led_rgb_pwm.enable(Channel::Ch1);
-    led_rgb_pwm.enable(Channel::Ch2);
-    led_rgb_pwm.enable(Channel::Ch3);
-    led_rgb_pwm.set_duty(Channel::Ch1, max_1);//b
-    led_rgb_pwm.set_duty(Channel::Ch2, 0);//g
-    led_rgb_pwm.set_duty(Channel::Ch3, max_1);//r*/
+    //let ch_r = PwmPin::new_ch1(p.PA6);
+    //let ch_g = PwmPin::new_ch2(p.PA7);
+    //let ch_b = PwmPin::new_ch4(p.PB1);    
+    //let mut led_rgb_pwm = SimplePwm::new(p.TIM3, Some(ch_r), Some(ch_g),None, Some(ch_b), khz(10));    
+    //let max = led_rgb_pwm.get_max_duty();    
+    //led_rgb_pwm.enable(Channel::Ch4);
+    //led_rgb_pwm.set_duty(Channel::Ch4, 0);
 
-    let row0 = Output::new(p.PB5.degrade(), Level::Low, Speed::Low); 
+    
+
+    let row0 = Output::new(p.PB5.degrade(),Level::Low, Speed::Low); 
     let row1 = Output::new(p.PB6.degrade(),Level::Low, Speed::Low);
     let row2 = Output::new(p.PB7.degrade(),Level::Low, Speed::Low);
     let row3 = Output::new(p.PB8.degrade(),Level::Low, Speed::Low);
 
-    let col0 =  Input::new(p.PB12.degrade(), Pull::Down);
+    let col0 = Input::new(p.PB12.degrade(),Pull::Down);
     let col1 = Input::new(p.PB13.degrade(),Pull::Down);
     let col2 = Input::new(p.PB14.degrade(),Pull::Down);
     let col3 = Input::new(p.PB15.degrade(),Pull::Down);
@@ -79,21 +82,38 @@ async fn main(spawner: Spawner) {
     //keyboard matrix
     let mut matrix:[[bool; COLS]; ROWS]=[ [false; COLS]; ROWS];    
     let mut matrix_last:[[bool; COLS]; ROWS]= [ [false; COLS]; ROWS];
+    //let mut matrix_debounce:[[u64; COLS]; ROWS]= [ [0; COLS]; ROWS];
     
-    let mut keys_right:[[u8; COLS]; ROWS]=[
-        [keys::KEY_TAB, keys::KEY_Q,keys::KEY_W,keys::KEY_E,keys::KEY_R,keys::KEY_T ],
-        [keys::KEY_TAB, keys::KEY_A,keys::KEY_S,keys::KEY_D,keys::KEY_F,keys::KEY_G ],
-        [keys::KEY_TAB, keys::KEY_Z,keys::KEY_X,keys::KEY_C,keys::KEY_V,keys::KEY_B ],
-        [0,0,0         ,keys::KEY_RIGHTCTRL,keys::KEY_RIGHTSHIFT,keys::KEY_RIGHTALT ],
-    ];    
-
-    let mut keys_left:[[u8; COLS]; ROWS]=[
-        [keys::KEY_Y, keys::KEY_U,keys::KEY_I,keys::KEY_O,keys::KEY_P,keys::KEY_BACKSPACE ],
-        [keys::KEY_H, keys::KEY_J,keys::KEY_K,keys::KEY_L,keys::KEY_F,keys::KEY_ENTER ],
-        [keys::KEY_N, keys::KEY_M,keys::KEY_X,keys::KEY_LEFTBRACE,keys::KEY_RIGHTBRACE,keys::KEY_APOSTROPHE ],
-        [0,0,0                       ,keys::KEY_COMMA,keys::KEY_DOT,keys::KEY_SPACE ],
+    let mut keys_right:[[[u8; COLS]; ROWS];LAYERS]=[
+        [
+            [keys::KEY_ESC, keys::KEY_Q,keys::KEY_W,keys::KEY_E,keys::KEY_R,keys::KEY_T ],
+            [keys::KEY_TAB, keys::KEY_A,keys::KEY_S,keys::KEY_D,keys::KEY_F,keys::KEY_G ],
+            [keys::KEY_TAB, keys::KEY_Z,keys::KEY_X,keys::KEY_C,keys::KEY_V,keys::KEY_B ],
+            [0,0,0         ,keys::KEY_RIGHTCTRL,keys::KEY_RIGHTSHIFT,keys::KEY_RIGHTALT ],
+        ],
+        [
+            [keys::KEY_ESC, keys::KEY_Q,keys::KEY_W,keys::KEY_E,keys::KEY_R,keys::KEY_T ],
+            [keys::KEY_TAB, keys::KEY_A,keys::KEY_S,keys::KEY_D,keys::KEY_F,keys::KEY_G ],
+            [keys::KEY_TAB, keys::KEY_Z,keys::KEY_X,keys::KEY_C,keys::KEY_V,keys::KEY_B ],
+            [0,0,0         ,keys::KEY_RIGHTCTRL,keys::KEY_RIGHTSHIFT,keys::KEY_RIGHTALT ],
+        ]
     ];
 
+    let mut keys_left:[[[u8; COLS]; ROWS]; LAYERS]=[
+        [
+            [keys::KEY_Y, keys::KEY_U,keys::KEY_I,keys::KEY_O,keys::KEY_P,keys::KEY_BACKSPACE ],
+            [keys::KEY_H, keys::KEY_J,keys::KEY_K,keys::KEY_L,keys::KEY_F,keys::KEY_ENTER ],
+            [keys::KEY_N, keys::KEY_M,keys::KEY_X,keys::KEY_LEFTBRACE,keys::KEY_RIGHTBRACE,keys::KEY_APOSTROPHE ],
+            [keys::KEY_LAYER,keys::KEY_DOT,keys::KEY_SPACE ,0,0,0]
+        ],
+        [
+            [keys::KEY_Y, keys::KEY_U,keys::KEY_I,keys::KEY_O,keys::KEY_P,keys::KEY_BACKSPACE ],
+            [keys::KEY_H, keys::KEY_UP,keys::KEY_K,keys::KEY_L,keys::KEY_F,keys::KEY_ENTER ],
+            [keys::KEY_LEFT, keys::KEY_DOWN,keys::KEY_RIGHT,keys::KEY_LEFTBRACE,keys::KEY_RIGHTBRACE,keys::KEY_APOSTROPHE ],
+            [keys::KEY_LAYER,keys::KEY_DOT,keys::KEY_SPACE ,0,0,0]
+        ]
+    ];
+    let mut layer:usize=0;
     let mut rows:[Output<'static,AnyPin>; ROWS]=[row0,row1,row2,row3];
     let cols:[Input <'static,AnyPin>; COLS]=[col0,col1,col2,col3,col4,col5];
 
@@ -103,10 +123,20 @@ async fn main(spawner: Spawner) {
         // This forced reset is needed only for development, without it host
         // will not reset your device when you upload new firmware.
         let _dp = Output::new(&mut p.PA12, Level::Low, Speed::Low);
-        Timer::after(Duration::from_millis(10)).await;
+        Timer::after(Duration::from_millis(100)).await;
     }
 
-    // Create the driver, from the HAL.
+    let irq = interrupt::take!(I2C2_EV);    
+    let mut i2c = I2c::new(p.I2C2, p.PB10, p.PB11,irq,NoDma,NoDma,Hertz(100_000),Default::default());    
+    let mut timeout_i2c = TimeoutI2c::new(&mut i2c, Duration::from_millis(50));
+    let mut i2c_data_send = [0u8; 1];
+    let mut i2c_data_recv = [0u8; SECONDARY_KB_N_BYTES];
+    
+
+    let mut sec_matrix:[[bool; COLS]; ROWS]=[ [false; COLS]; ROWS];    
+    let mut sec_matrix_last:[[bool; COLS]; ROWS]= [ [false; COLS]; ROWS];
+    
+     // Create the driver, from the HAL.
     let irq = interrupt::take!(USB_LP_CAN1_RX0);
     let driver = Driver::new(p.USB, irq, p.PA12, p.PA11);
 
@@ -114,7 +144,7 @@ async fn main(spawner: Spawner) {
     config.manufacturer = Some("Nicguzzo");
     config.product = Some("Ninja corne");
     config.serial_number = Some("12345678");
-    config.max_power = 400;
+    config.max_power = 500;
     config.max_packet_size_0 = 64;
     config.supports_remote_wakeup = true;
 
@@ -169,77 +199,137 @@ async fn main(spawner: Spawner) {
         //const NKRO:usize=21*2; //corne
         //let mut report_nkro:[u8;NKRO]=[0;NKRO];
         //limited to 6 keys, for now
+        let report_buff_max=6;
         let mut report_lim6:[u8;6]=[0;6];
-        let mut report_buff_max=6;
+        //let mut instant= Instant::now();
         loop {
+            for row in 0..ROWS{
+                rows[row].set_high();
+                for col in 0..COLS  {
+                    matrix_last[row][col]=matrix[row][col];
+                    matrix[row][col]=cols[col].is_high();
+                    
+                }
+                rows[row].set_low();
+            }
+            //read i2c sync
+            let res=timeout_i2c.blocking_write_read(SECONDARY_KB_ADDRESS, &i2c_data_send,&mut i2c_data_recv);
+            match res{
+                Ok(_) => {
+                    /*info!("sec keys \n{:08b}\n{:08b}\n{:08b}\n",
+                    i2c_data_recv[0],
+                    i2c_data_recv[1],
+                    i2c_data_recv[2]
+                    );*/
+                    let mut b=0;
+                    let mut k:usize=0;
+                    let mut bit:u8=7;
+                    for col in 0..COLS  {
+                        for row in 0..ROWS{
+                            sec_matrix_last[row][col]=sec_matrix[row][col];
+                            b=k/8;
+                            sec_matrix[row][col]= ((i2c_data_recv[b]>>bit)&0x01) != 0;
+                            if bit==0{
+                                bit=7;
+                            }else{
+                                bit=bit-1;
+                            }
+                            k+=1;
+                        }
+                    }
+                },
+                Err(Error::Timeout) => {
+                    led.set_low();
+                    error!("Operation timed out");
+                },
+                Err(e) => error!("I2c write Error: {:?}", e),                    
+            }
+            
+            let mut event=false;
+            
+            for row in 0..ROWS{                
+                for col in 0..COLS  {
+                    //pressed                    
+                    if matrix[row][col] && !matrix_last[row][col]{                        
+                        if keys_right[layer][row][col]== keys::KEY_LAYER{                            
+                            layer=1;
+                            info!("layer {}",layer);
+                            event=false;
+                            continue;
+                        }
+                        
+                        for i in 0..report_buff_max{
+                            if report_lim6[i]==0{
+                                event=true;
+                                report_lim6[i]=keys_right[layer][row][col];
+                                break;
+                            }
+                        }
+                    }
+                    if sec_matrix[row][col] && !sec_matrix_last[row][col]{                        
+                        if keys_left[layer][row][col]== keys::KEY_LAYER{                            
+                            layer=1;
+                            info!("layer {}",layer);
+                            event=false;
+                            continue;
+                        }
+                        for i in 0..report_buff_max{
+                            if report_lim6[i]==0{
+                                event=true;
+                                report_lim6[i]=keys_left[layer][row][col];
+                                break;
+                            }
+                        }
+                    }
+                    //released
+                    if !matrix[row][col] && matrix_last[row][col]{
+                        if keys_right[layer][row][col]== keys::KEY_LAYER {
+                            layer=0;
+                            info!("layer {}",layer);
+                            event=false;
+                            continue;
+                        }
+                        for i in 0..report_buff_max{
+                            if report_lim6[i]==keys_right[layer][row][col]{
+                                event=true;
+                                report_lim6[i]=0;
+                                break;
+                            }
+                        }                        
+                    }
+                    if !sec_matrix[row][col] && sec_matrix_last[row][col]{
+                        if keys_left[layer][row][col]== keys::KEY_LAYER {
+                            layer=0;
+                            info!("layer {}",layer);
+                            event=false;
+                            continue;
+                        }
+                        for i in 0..report_buff_max{
+                            if report_lim6[i]==keys_left[layer][row][col]{
+                                event=true;
+                                report_lim6[i]=0;
+                                break;
+                            }
+                        }                        
+                    }
+                }
+            }
             if SUSPENDED.load(Ordering::Acquire) {
                 info!("Triggering remote wakeup");
                 remote_wakeup.signal(());
             }else{
-                for row in 0..ROWS{
-                    rows[row].set_high();
-                    for col in 0..COLS  {
-                        matrix_last[row][col]=matrix[row][col];
-                        matrix[row][col]=cols[col].is_high();
-                        if matrix[row][col]{
-                            led.set_low();
-                        }else{
-                            led.set_high();
-                        }
-                        if matrix[row][col] && !matrix_last[row][col]{
-                            let mut pressed=false;
-                            for i in 0..report_buff_max{
-                                if report_lim6[i]==0{
-                                    report_lim6[i]=keys_right[row][col];
-                                    pressed=true;
-                                    break;
-                                }
-                            }
-                            if pressed {                                
-                                //led_rgb_pwm.set_duty(Channel::Ch1, max_1);//b
-                                //led_rgb_pwm.set_duty(Channel::Ch2, max_1);//g
-                                //led_rgb_pwm.set_duty(Channel::Ch3, 0);//r
-                                let report = KeyboardReport {
-                                    keycodes: report_lim6,
-                                    leds: 0,
-                                    modifier: 0,
-                                    reserved: 0,
-                                };
-                                match writer.write_serialize(&report).await {
-                                    Ok(()) => {}
-                                    Err(e) => warn!("Failed to send report: {:?}", e),
-                                };
-                            }else{
-                                info!("max keys");
-                            }                            
-                        }
-                        if !matrix[row][col] && matrix_last[row][col]{
-                            let mut released=false;
-                            for i in 0..report_buff_max{
-                                if report_lim6[i]==keys_right[row][col]{
-                                    report_lim6[i]=0;
-                                    released=true;
-                                    break;
-                                }
-                            }
-                            if released {
-                                //led_rgb_pwm.set_duty(Channel::Ch1, max_1);//b
-                                //led_rgb_pwm.set_duty(Channel::Ch2, 0);//g
-                                //led_rgb_pwm.set_duty(Channel::Ch3, max_1);//r
-                                let report = KeyboardReport {
-                                    keycodes: report_lim6,
-                                    leds: 0,
-                                    modifier: 0,
-                                    reserved: 0,
-                                };
-                                match writer.write_serialize(&report).await {
-                                    Ok(()) => {}
-                                    Err(e) => warn!("Failed to send report: {:?}", e),
-                                };
-                            }                            
-                        }
-                    }
-                    rows[row].set_low();
+                if event {
+                    //led.set_low();
+                    let report = KeyboardReport {
+                        keycodes: report_lim6,
+                        leds: 0,
+                        modifier: 0,
+                        reserved: 0,
+                    };
+                    match writer.write_serialize(&report).await {
+                        Ok(()) => {}
+                        Err(e) => warn!("Failed to send report: {:?}", e),
+                    };
                 }
             }
             Timer::after(Duration::from_millis(1)).await;
@@ -249,9 +339,7 @@ async fn main(spawner: Spawner) {
     let out_fut = async {
         reader.run(false, &request_handler).await;
     };
-
-    // Run everything concurrently.
-    // If we had made everything `'static` above instead, we could do this using separate tasks instead.
+    
     join(usb_fut, join(in_fut, out_fut)).await;
     
 }
