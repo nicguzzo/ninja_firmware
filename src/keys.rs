@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-pub const KEY_LAYER:u8=  0xff;
 
 pub const KEY_MOD_LCTRL:u8=  0x01;
 pub const KEY_MOD_LSHIFT:u8= 0x02;

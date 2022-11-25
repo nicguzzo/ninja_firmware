@@ -25,7 +25,7 @@ use embassy_usb::{Builder, DeviceStateHandler};
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 
 use {defmt_rtt as _, panic_probe as _};
-
+use keys::*;
 const COLS:usize=6;
 const ROWS:usize=4;
 const LAYERS:usize=2;
@@ -80,40 +80,53 @@ async fn main(spawner: Spawner) {
     let col5 = Input::new(p.PB4.degrade(), Pull::Down);
 
     //keyboard matrix
-    let mut matrix:[[bool; COLS]; ROWS]=[ [false; COLS]; ROWS];    
-    let mut matrix_last:[[bool; COLS]; ROWS]= [ [false; COLS]; ROWS];
+    type Matrix= [[bool; COLS]; ROWS];
+    let mut matrix:Matrix=[ [false; COLS]; ROWS];    
+    let mut matrix_last:Matrix= [ [false; COLS]; ROWS];
+
+    let mut sec_matrix:Matrix=[ [false; COLS]; ROWS];    
+    let mut sec_matrix_last:Matrix= [ [false; COLS]; ROWS];
+
     //let mut matrix_debounce:[[u64; COLS]; ROWS]= [ [0; COLS]; ROWS];
-    
-    let mut keys_right:[[[u8; COLS]; ROWS];LAYERS]=[
+
+    enum Key{
+        Code(u8),
+        Modifier(u8),
+        Layer,
+        NoKey,
+    }
+    type Side = [[Key; COLS]; ROWS];
+    let mut keys_left:[Side;LAYERS]=[
         [
-            [keys::KEY_ESC, keys::KEY_Q,keys::KEY_W,keys::KEY_E,keys::KEY_R,keys::KEY_T ],
-            [keys::KEY_TAB, keys::KEY_A,keys::KEY_S,keys::KEY_D,keys::KEY_F,keys::KEY_G ],
-            [keys::KEY_TAB, keys::KEY_Z,keys::KEY_X,keys::KEY_C,keys::KEY_V,keys::KEY_B ],
-            [0,0,0         ,keys::KEY_RIGHTCTRL,keys::KEY_RIGHTSHIFT,keys::KEY_RIGHTALT ],
+            [Key::Code(KEY_ESC)       ,Key::Code(KEY_Q),Key::Code(KEY_W),Key::Code(KEY_E),Key::Code(KEY_R),Key::Code(KEY_T) ],
+            [Key::Code(KEY_TAB)       ,Key::Code(KEY_A),Key::Code(KEY_S),Key::Code(KEY_D),Key::Code(KEY_F),Key::Code(KEY_G) ],
+            [Key::Modifier(KEY_MOD_LSHIFT) ,Key::Code(KEY_Z),Key::Code(KEY_X),Key::Code(KEY_C),Key::Code(KEY_V),Key::Code(KEY_B) ],
+            [Key::NoKey,Key::NoKey,Key::NoKey,Key::Modifier(KEY_MOD_LCTRL),Key::Modifier(KEY_MOD_LMETA),Key::Layer ],
         ],
         [
-            [keys::KEY_ESC, keys::KEY_Q,keys::KEY_W,keys::KEY_E,keys::KEY_R,keys::KEY_T ],
-            [keys::KEY_TAB, keys::KEY_A,keys::KEY_S,keys::KEY_D,keys::KEY_F,keys::KEY_G ],
-            [keys::KEY_TAB, keys::KEY_Z,keys::KEY_X,keys::KEY_C,keys::KEY_V,keys::KEY_B ],
-            [0,0,0         ,keys::KEY_RIGHTCTRL,keys::KEY_RIGHTSHIFT,keys::KEY_RIGHTALT ],
+            [Key::Code(KEY_F1)  ,Key::Code(KEY_F2),Key::Code(KEY_F3),Key::Code(KEY_F4)        ,Key::Code(KEY_F5),Key::Code(KEY_F6) ],
+            [Key::Code(KEY_1)   ,Key::Code(KEY_2) ,Key::Code(KEY_3) ,Key::Code(KEY_4)         ,Key::Code(KEY_5) ,Key::Code(KEY_6)  ],
+            [Key::Code(KEY_TAB) ,Key::Code(KEY_Z) ,Key::Code(KEY_X) ,Key::Code(KEY_C)         ,Key::Code(KEY_V) ,Key::Code(KEY_B)  ],
+            [Key::NoKey,Key::NoKey,Key::NoKey ,Key::Modifier(KEY_MOD_LALT),Key::Modifier(KEY_MOD_RMETA),Key::Layer ],
         ]
     ];
 
-    let mut keys_left:[[[u8; COLS]; ROWS]; LAYERS]=[
+    let mut keys_right:[Side; LAYERS]=[
         [
-            [keys::KEY_Y, keys::KEY_U,keys::KEY_I,keys::KEY_O,keys::KEY_P,keys::KEY_BACKSPACE ],
-            [keys::KEY_H, keys::KEY_J,keys::KEY_K,keys::KEY_L,keys::KEY_F,keys::KEY_ENTER ],
-            [keys::KEY_N, keys::KEY_M,keys::KEY_X,keys::KEY_LEFTBRACE,keys::KEY_RIGHTBRACE,keys::KEY_APOSTROPHE ],
-            [keys::KEY_LAYER,keys::KEY_DOT,keys::KEY_SPACE ,0,0,0]
+            [Key::Code(KEY_Y), Key::Code(KEY_U),Key::Code(KEY_I),Key::Code(KEY_O),Key::Code(KEY_P),Key::Code(KEY_BACKSPACE) ],
+            [Key::Code(KEY_H), Key::Code(KEY_J),Key::Code(KEY_K),Key::Code(KEY_L),Key::Code(KEY_F),Key::Code(KEY_ENTER) ],
+            [Key::Code(KEY_N), Key::Code(KEY_M),Key::Code(KEY_X),Key::Code(KEY_LEFTBRACE),Key::Code(KEY_RIGHTBRACE),Key::Code(KEY_APOSTROPHE) ],
+            [Key::Code(KEY_ENTER),Key::Code(KEY_SPACE),Key::Code(KEY_DOT) ,Key::NoKey,Key::NoKey,Key::NoKey]
         ],
         [
-            [keys::KEY_Y, keys::KEY_U,keys::KEY_I,keys::KEY_O,keys::KEY_P,keys::KEY_BACKSPACE ],
-            [keys::KEY_H, keys::KEY_UP,keys::KEY_K,keys::KEY_L,keys::KEY_F,keys::KEY_ENTER ],
-            [keys::KEY_LEFT, keys::KEY_DOWN,keys::KEY_RIGHT,keys::KEY_LEFTBRACE,keys::KEY_RIGHTBRACE,keys::KEY_APOSTROPHE ],
-            [keys::KEY_LAYER,keys::KEY_DOT,keys::KEY_SPACE ,0,0,0]
+            [Key::Code(KEY_F7)    ,Key::Code(KEY_F8)  ,Key::Code(KEY_F9)    ,Key::Code(KEY_F10)   ,Key::Code(KEY_F11)     ,Key::Code(KEY_F12) ],
+            [Key::Code(KEY_6)     ,Key::Code(KEY_UP)  ,Key::Code(KEY_7)     ,Key::Code(KEY_8)     ,Key::Code(KEY_9)       ,Key::Code(KEY_0)   ],
+            [Key::Code(KEY_LEFT)  ,Key::Code(KEY_DOWN),Key::Code(KEY_EQUAL) ,Key::Code(KEY_PAGEUP),Key::Code(KEY_PAGEDOWN),Key::Code(KEY_MINUS) ],
+            [Key::Code(KEY_DELETE),Key::Code(KEY_HOME),Key::Code(KEY_END)   ,Key::NoKey           ,Key::NoKey              ,Key::NoKey]
         ]
     ];
     let mut layer:usize=0;
+    let mut modifier:u8=0;
     let mut rows:[Output<'static,AnyPin>; ROWS]=[row0,row1,row2,row3];
     let cols:[Input <'static,AnyPin>; COLS]=[col0,col1,col2,col3,col4,col5];
 
@@ -133,8 +146,7 @@ async fn main(spawner: Spawner) {
     let mut i2c_data_recv = [0u8; SECONDARY_KB_N_BYTES];
     
 
-    let mut sec_matrix:[[bool; COLS]; ROWS]=[ [false; COLS]; ROWS];    
-    let mut sec_matrix_last:[[bool; COLS]; ROWS]= [ [false; COLS]; ROWS];
+    
     
      // Create the driver, from the HAL.
     let irq = interrupt::take!(USB_LP_CAN1_RX0);
@@ -247,70 +259,62 @@ async fn main(spawner: Spawner) {
             
             let mut event=false;
             
-            for row in 0..ROWS{                
-                for col in 0..COLS  {
-                    //pressed                    
-                    if matrix[row][col] && !matrix_last[row][col]{                        
-                        if keys_right[layer][row][col]== keys::KEY_LAYER{                            
-                            layer=1;
-                            info!("layer {}",layer);
-                            event=false;
-                            continue;
+            let mat:[&Matrix;2] =[&matrix,&sec_matrix];
+            let mat_last:[&Matrix;2] =[&matrix_last,&sec_matrix_last];
+            let side:[&Side;2]=[&keys_left[layer],&keys_right[layer]];
+            for m in 0..1{
+                for row in 0..ROWS{                
+                    for col in 0..COLS  {
+                        //pressed        
+                        if mat[m][row][col] && !mat_last[m][row][col]{                         
+                            match side[m][row][col]{
+                                Key::Layer=>{
+                                    layer=1;
+                                    event=false;
+                                    continue;
+                                },
+                                Key::Modifier(k)=>{
+                                    modifier|=k;
+                                    event=true;
+                                    info!("p modifier {:08b}",modifier)
+                                },
+                                Key::Code(code)=>{
+                                    for i in 0..report_buff_max{
+                                        if report_lim6[i]==0{
+                                            event=true;
+                                            report_lim6[i]=code;
+                                            break;
+                                        }
+                                    }
+                                }
+                                _ =>()
+                            }                        
                         }
-                        
-                        for i in 0..report_buff_max{
-                            if report_lim6[i]==0{
-                                event=true;
-                                report_lim6[i]=keys_right[layer][row][col];
-                                break;
+                        //released
+                        if !mat[m][row][col] && mat_last[m][row][col]{
+                            match side[m][row][col]{
+                                Key::Layer=>{
+                                    layer=1;
+                                    event=false;
+                                    continue;
+                                },
+                                Key::Modifier(k)=>{
+                                    modifier&=!k;
+                                    event=true;
+                                    info!("r modifier {:08b}",modifier)
+                                },
+                                Key::Code(code)=>{
+                                    for i in 0..report_buff_max{
+                                        if report_lim6[i]==code{
+                                            event=true;
+                                            report_lim6[i]=0;
+                                            break;
+                                        }
+                                    }
+                                }
+                                _ =>()
                             }
                         }
-                    }
-                    if sec_matrix[row][col] && !sec_matrix_last[row][col]{                        
-                        if keys_left[layer][row][col]== keys::KEY_LAYER{                            
-                            layer=1;
-                            info!("layer {}",layer);
-                            event=false;
-                            continue;
-                        }
-                        for i in 0..report_buff_max{
-                            if report_lim6[i]==0{
-                                event=true;
-                                report_lim6[i]=keys_left[layer][row][col];
-                                break;
-                            }
-                        }
-                    }
-                    //released
-                    if !matrix[row][col] && matrix_last[row][col]{
-                        if keys_right[layer][row][col]== keys::KEY_LAYER {
-                            layer=0;
-                            info!("layer {}",layer);
-                            event=false;
-                            continue;
-                        }
-                        for i in 0..report_buff_max{
-                            if report_lim6[i]==keys_right[layer][row][col]{
-                                event=true;
-                                report_lim6[i]=0;
-                                break;
-                            }
-                        }                        
-                    }
-                    if !sec_matrix[row][col] && sec_matrix_last[row][col]{
-                        if keys_left[layer][row][col]== keys::KEY_LAYER {
-                            layer=0;
-                            info!("layer {}",layer);
-                            event=false;
-                            continue;
-                        }
-                        for i in 0..report_buff_max{
-                            if report_lim6[i]==keys_left[layer][row][col]{
-                                event=true;
-                                report_lim6[i]=0;
-                                break;
-                            }
-                        }                        
                     }
                 }
             }
@@ -323,7 +327,7 @@ async fn main(spawner: Spawner) {
                     let report = KeyboardReport {
                         keycodes: report_lim6,
                         leds: 0,
-                        modifier: 0,
+                        modifier,
                         reserved: 0,
                     };
                     match writer.write_serialize(&report).await {
