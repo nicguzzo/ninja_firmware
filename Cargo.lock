@@ -371,7 +371,7 @@ dependencies = [
 
 [[package]]
 name = "embassy-executor"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "atomic-polyfill 1.0.1",
  "cfg-if",
@@ -507,18 +507,18 @@ checksum = "129b101ddfee640565f7c07b301a31d95aa21e5acef21a491c307139f5fa4c91"
 
 [[package]]
 name = "embedded-hal-async"
-version = "0.1.0-alpha.3"
+version = "0.2.0-alpha.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c913f631bd08c253b85fdf0077061c64763d70e27803b04da5a49c5fb2a65057"
+checksum = "608a322808d65da06715e03109c0cb69f79a5459af756fba393ab83e875d4969"
 dependencies = [
  "embedded-hal 1.0.0-alpha.9",
 ]
 
 [[package]]
 name = "embedded-io"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33dfba9e6c113f2fd8537c943780a7345945e66c86972e356b1152e19481bcf5"
+checksum = "ef1a6892d9eef45c8fa6b9e0086428a2cca8491aca8f787c534a3d6d0bcb3ced"
 dependencies = [
  "defmt",
 ]
@@ -797,7 +797,6 @@ dependencies = [
  "embedded-hal 0.2.7",
  "futures",
  "heapless",
- "nb 1.0.0",
  "panic-probe",
  "usbd-hid",
 ]

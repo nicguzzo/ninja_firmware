@@ -2,7 +2,7 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering, AtomicUsize};
 
 use defmt::{panic, *};
 use embassy_executor::Spawner;
@@ -20,12 +20,13 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer,Instant};
 use embassy_usb::class::hid::{HidReaderWriter, ReportId, RequestHandler, State};
-use embassy_usb::control::OutResponse;
+use embassy_usb::control::{OutResponse, ControlHandler, Request};
 use embassy_usb::{Builder, DeviceStateHandler};
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 
 use {defmt_rtt as _, panic_probe as _};
 use keys::*;
+
 const COLS:usize=6;
 const ROWS:usize=4;
 const LAYERS:usize=2;
@@ -37,6 +38,7 @@ const SECONDARY_KB_N_BYTES:usize = 3;
 
 static SUSPENDED: AtomicBool = AtomicBool::new(false);
 mod keys;
+
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -142,23 +144,26 @@ async fn main(spawner: Spawner) {
     let irq = interrupt::take!(I2C2_EV);    
     let mut i2c = I2c::new(p.I2C2, p.PB10, p.PB11,irq,NoDma,NoDma,Hertz(100_000),Default::default());    
     let mut timeout_i2c = TimeoutI2c::new(&mut i2c, Duration::from_millis(50));
-    let mut i2c_data_send = [0u8; 1];
+    let i2c_data_send = [0u8; 1];
     let mut i2c_data_recv = [0u8; SECONDARY_KB_N_BYTES];
-    
-
-    
     
      // Create the driver, from the HAL.
     let irq = interrupt::take!(USB_LP_CAN1_RX0);
     let driver = Driver::new(p.USB, irq, p.PA12, p.PA11);
 
-    let mut config =  embassy_usb::Config::new(0xc0de, 0xcafe);
+
+    let mut config =  embassy_usb::Config::new(0xcaca,0xd1ce);
+    
     config.manufacturer = Some("Nicguzzo");
     config.product = Some("Ninja corne");
     config.serial_number = Some("12345678");
     config.max_power = 500;
     config.max_packet_size_0 = 64;
     config.supports_remote_wakeup = true;
+    config.device_class = 0x03;
+    config.device_sub_class = 0x01;
+    config.device_protocol = 0x01;
+    //config.composite_with_iads=true;
 
     let mut device_descriptor = [0; 256];
     let mut config_descriptor = [0; 256];
@@ -168,6 +173,10 @@ async fn main(spawner: Spawner) {
     let device_state_handler = MyDeviceStateHandler::new();
 
     let mut state = State::new();
+    /*let mut state= State {
+        control: MaybeUninit::uninit(),
+        out_report_offset: AtomicUsize::new(0),
+    };*/
 
     let mut builder = Builder::new(
         driver,
@@ -178,6 +187,7 @@ async fn main(spawner: Spawner) {
         &mut control_buf,
         Some(&device_state_handler),
     );
+    
 
     // Create classes on the builder.
     let config = embassy_usb::class::hid::Config {
@@ -190,7 +200,7 @@ async fn main(spawner: Spawner) {
 
     // Build the builder.
     let mut usb = builder.build();
-
+    
     let remote_wakeup: Signal<CriticalSectionRawMutex, _> = Signal::new();
 
     // Run the USB device.
@@ -220,7 +230,6 @@ async fn main(spawner: Spawner) {
                 for col in 0..COLS  {
                     matrix_last[row][col]=matrix[row][col];
                     matrix[row][col]=cols[col].is_high();
-                    
                 }
                 rows[row].set_low();
             }
@@ -258,61 +267,63 @@ async fn main(spawner: Spawner) {
             }
             
             let mut event=false;
-            
-            let mat:[&Matrix;2] =[&matrix,&sec_matrix];
-            let mat_last:[&Matrix;2] =[&matrix_last,&sec_matrix_last];
-            let side:[&Side;2]=[&keys_left[layer],&keys_right[layer]];
-            for m in 0..1{
-                for row in 0..ROWS{                
-                    for col in 0..COLS  {
-                        //pressed        
-                        if mat[m][row][col] && !mat_last[m][row][col]{                         
-                            match side[m][row][col]{
-                                Key::Layer=>{
-                                    layer=1;
-                                    event=false;
-                                    continue;
-                                },
-                                Key::Modifier(k)=>{
-                                    modifier|=k;
-                                    event=true;
-                                    info!("p modifier {:08b}",modifier)
-                                },
-                                Key::Code(code)=>{
-                                    for i in 0..report_buff_max{
-                                        if report_lim6[i]==0{
-                                            event=true;
-                                            report_lim6[i]=code;
-                                            break;
+            {
+                let mat:[&Matrix;2] =[&matrix,&sec_matrix];
+                let mat_last:[&Matrix;2] =[&matrix_last,&sec_matrix_last];
+                let side:[&Side;2]=[&keys_left[layer],&keys_right[layer]];
+                for m in 0..2{
+                    for row in 0..ROWS{
+                        for col in 0..COLS  {
+                            //pressed        
+                            if mat[m][row][col] && !mat_last[m][row][col]{                         
+                                match side[m][row][col]{
+                                    Key::Layer=>{
+                                        layer=1;
+                                        event=false;
+                                        continue;
+                                    },
+                                    Key::Modifier(k)=>{
+                                        modifier|=k;
+                                        event=true;
+                                        //info!("p modifier {:08b}",modifier)
+                                    },
+                                    Key::Code(code)=>{
+                                        info!("code {:08b}",code);
+                                        for i in 0..report_buff_max{
+                                            if report_lim6[i]==0{
+                                                event=true;
+                                                report_lim6[i]=code;
+                                                break;
+                                            }
                                         }
                                     }
-                                }
-                                _ =>()
-                            }                        
-                        }
-                        //released
-                        if !mat[m][row][col] && mat_last[m][row][col]{
-                            match side[m][row][col]{
-                                Key::Layer=>{
-                                    layer=1;
-                                    event=false;
-                                    continue;
-                                },
-                                Key::Modifier(k)=>{
-                                    modifier&=!k;
-                                    event=true;
-                                    info!("r modifier {:08b}",modifier)
-                                },
-                                Key::Code(code)=>{
-                                    for i in 0..report_buff_max{
-                                        if report_lim6[i]==code{
-                                            event=true;
-                                            report_lim6[i]=0;
-                                            break;
+                                    _ =>()
+                                }                        
+                            }
+                            //released
+                            if !mat[m][row][col] && mat_last[m][row][col]{
+                                match side[m][row][col]{
+                                    Key::Layer=>{
+                                        layer=1;
+                                        event=false;
+                                        continue;
+                                    },
+                                    Key::Modifier(k)=>{
+                                        modifier&=!k;
+                                        event=true;
+                                        //info!("r modifier {:08b}",modifier)
+                                    },
+                                    Key::Code(code)=>{
+                                        for i in 0..report_buff_max{
+                                            if report_lim6[i]==code{
+                                                event=true;
+                                                report_lim6[i]=0;
+                                                break;
+                                            }
                                         }
                                     }
+                                    _ =>()
                                 }
-                                _ =>()
                             }
                         }
                     }
@@ -425,5 +436,13 @@ impl DeviceStateHandler for MyDeviceStateHandler {
                 info!("Device resumed, the Vbus current limit is 100mA");
             }
         }
+    }
+}
+
+struct MyControl{}
+impl ControlHandler for MyControl{
+    fn control_out(&mut self, req: Request, data: &[u8]) -> OutResponse {
+        let _ = (req, data);
+        OutResponse::Rejected
     }
 }
