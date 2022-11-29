@@ -1,5 +1,4 @@
 use usb_device::class_prelude::*;
-use usb_device::prelude::*;
 use fugit::ExtU32;
 use usbd_human_interface_device::hid_class::prelude::HidProtocol;
 use usbd_human_interface_device::{interface::{raw::{RawInterface, RawInterfaceBuilder, RawInterfaceConfig}, WrappedInterfaceConfig, InterfaceClass, WrappedInterface}, UsbHidError, hid_class::UsbPacketSize};

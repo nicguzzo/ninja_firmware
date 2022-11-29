@@ -17,10 +17,9 @@ use stm32f1xx_hal::gpio::{ErasedPin,Input,PushPull, PullUp, Output, Alternate, O
 use stm32f1xx_hal::{prelude::*, gpio::PinState};
 use stm32f1xx_hal::usb::{UsbBus, UsbBusType};
 use stm32f1xx_hal::{pac, usb::Peripheral};
-use stm32f1xx_hal::flash::FlashWriter;
-use cortex_m::peripheral::NVIC;
+//use stm32f1xx_hal::flash::FlashWriter;
+//use cortex_m::peripheral::NVIC;
 use stm32f1xx_hal::{timer::{Event,CounterUs, SysDelay}, device::Interrupt, i2c::{BlockingI2c, Mode, DutyCycle}};
-
 use usb_device::class_prelude::*;
 use usb_device::prelude::*;
 use usbd_human_interface_device::device::consumer::{MultipleConsumerReport, ConsumerControlInterface};
@@ -28,7 +27,7 @@ use usbd_human_interface_device::device::mouse::{WheelMouseReport, WheelMouseInt
 use usbd_human_interface_device::page::{Keyboard,Consumer};
 use usbd_human_interface_device::device::keyboard::{KeyboardLedsReport, NKROBootKeyboardInterface};
 use usbd_human_interface_device::prelude::*;
-use defmt::{info, trace};
+use defmt::{info};
 //use cortex_m::asm::delay;
 mod config_class;
 use config_class::RawConfInterface;
@@ -39,7 +38,9 @@ const ROWS:usize=4;
 const LAYERS:usize=2;
 const SECONDARY_KB_ADDRESS: u8 = 0x08;
 const SECONDARY_KB_N_BYTES:usize = 3;
-type UsbDev<'a> =UsbDevice<'a, UsbBus<Peripheral>>;
+
+//type UsbBusT<'a> = UsbBusAllocator<UsbBus<Peripheral>>;
+type UsbDev<'a>  = UsbDevice<'a, UsbBus<Peripheral>>;
 
 type UsbKb<'a> =
 UsbHidClass<
@@ -85,14 +86,15 @@ pub struct NinjaKb{
 mod app {
     use crate::*;
     #[shared]
-    struct Shared {
-        usb_dev: UsbDevice<'static, UsbBusType>,
+    struct Shared {        
+        usb_dev: UsbDev<'static>,
         hid_kb: UsbKb<'static>,
         //ninja_kb:NinjaKb
     }
 
     #[local]
     struct Local {
+        //usb_bus: UsbBusT<'static>,
         timer:CounterUs<pac::TIM2>,
         ninja_kb:NinjaKb,
         i2c:I2cT
@@ -104,19 +106,19 @@ mod app {
         
         let mut flash = cx.device.FLASH.constrain();
         let rcc = cx.device.RCC.constrain();
-        /*let clocks = rcc
-                .cfgr
-                .use_hse(8.MHz())
-                .sysclk(72.MHz())
-                .pclk1(48.MHz())
-                .freeze(&mut flash.acr);*/
-
         let clocks = rcc
                 .cfgr
                 .use_hse(8.MHz())
                 .sysclk(72.MHz())
-                .pclk1(36.MHz())
+                .pclk1(48.MHz())
                 .freeze(&mut flash.acr);
+
+        /*let clocks = rcc
+                .cfgr
+                .use_hse(8.MHz())
+                .sysclk(72.MHz())
+                .pclk1(36.MHz())
+                .freeze(&mut flash.acr);*/
 
         /*let clocks = rcc
                 .cfgr
@@ -146,12 +148,12 @@ mod app {
         let row2 =gpiob.pb7.into_pull_up_input(&mut gpiob.crl).erase();
         let row3 =gpiob.pb8.into_pull_up_input(&mut gpiob.crh).erase();
 
-        let mut col0 = gpiob.pb12.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase();
-        let mut col1 = gpiob.pb13.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase();
-        let mut col2 = gpiob.pb14.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase();
-        let mut col3 = gpiob.pb15.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase();
-        let mut col4 =  gpiob_pb3.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase();
-        let mut col5 =  gpiob_pb4.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase();
+        let col0 = gpiob.pb12.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase();
+        let col1 = gpiob.pb13.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase();
+        let col2 = gpiob.pb14.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase();
+        let col3 = gpiob.pb15.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase();
+        let col4 =  gpiob_pb3.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase();
+        let col5 =  gpiob_pb4.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase();
 
         
         let layer:usize=0;
@@ -169,7 +171,7 @@ mod app {
         //let mut matrix_debounce:[[u64; COLS]; ROWS]= [ [0; COLS]; ROWS];
     
         
-        let mut keys=Keys{
+        let keys=Keys{
             left:[
                 [
                     [Key::Code(Keyboard::Escape),Key::Code(Keyboard::Q),Key::Code(Keyboard::W),Key::Code(Keyboard::E),Key::Code(Keyboard::R),Key::Code(Keyboard::T)],
@@ -218,56 +220,16 @@ mod app {
                 _=>info!("error reading mark from flash")
             }
         */
-        //USB
-        info!("Start Usb");
-        let mut usb_dp = gpioa.pa12.into_push_pull_output(&mut gpioa.crh);
-        usb_dp.set_low();
-        cortex_m::asm::delay(clocks.sysclk().raw() / 100);
-        cortex_m::asm::delay(clocks.sysclk().raw() / 100);
-
-        let usb = Peripheral {
-            usb: cx.device.USB,
-            pin_dm: gpioa.pa11,
-            pin_dp: usb_dp.into_floating_input(&mut gpioa.crh),
-        };        
-        let usb_bus = UsbBus::new(usb);
-
-        unsafe {
-            USB_BUS.replace(usb_bus);
-        }
-
-        let nkro=usbd_human_interface_device::device::keyboard::NKROBootKeyboardInterface::default_config();
-        let mouse=usbd_human_interface_device::device::mouse::WheelMouseInterface::default_config();
-        let mut consumer=usbd_human_interface_device::device::consumer::ConsumerControlInterface::default_config();
-
-        let config=RawConfInterface::default_config();
         
-        //control.inner_config.description=Some("Ninja Keyboard Corne Control");
         
-        let mut hid_kb:UsbKb  = UsbHidClassBuilder::new()
-            .add_interface(nkro)
-            .add_interface(mouse)
-            .add_interface(consumer)
-            .add_interface(config)
-            .build(unsafe { USB_BUS.as_ref().unwrap() });
         
-        let mut usb_dev:UsbDev = UsbDeviceBuilder::new(unsafe { USB_BUS.as_ref().unwrap() }, UsbVidPid(0xcaca, 0x0001))
-        .manufacturer("Nicguzzo")
-        .product("Ninja Keyboard Corne")
-        .serial_number("0")
-        .build();
-        
-        unsafe {
-                NVIC::unmask(Interrupt::USB_HP_CAN_TX);
-                NVIC::unmask(Interrupt::USB_LP_CAN_RX0);
-        }
-        
-        info!("Usb done.");
         
         info!("Conf tick timer.");
         let mut timer = cx.device.TIM2.counter_us(&clocks);
-        timer.start(1.millis()).unwrap();
-        timer.listen(Event::Update);
+        match timer.start(1.millis()){
+            Ok(_)=>timer.listen(Event::Update),
+            Err(_)=> info!("tick timer error.")
+        }
         info!("Conf tick timer done.");
 
         //i2c
@@ -290,7 +252,63 @@ mod app {
             100,
         );
         info!("Conf i2c done.");
+        //USB
+        info!("Start Usb");
+        let mut usb_dp = gpioa.pa12.into_push_pull_output(&mut gpioa.crh);
+        usb_dp.set_low();
+        for _i in 0..100 {
+            cortex_m::asm::delay(clocks.sysclk().raw() / 100);
+        }
 
+        let usb = Peripheral {
+            usb: cx.device.USB,
+            pin_dm: gpioa.pa11,
+            pin_dp: usb_dp.into_floating_input(&mut gpioa.crh),
+        };        
+        let usb_bus = UsbBus::new(usb);
+
+        unsafe {
+            USB_BUS.replace(usb_bus);
+        }
+
+        let nkro=usbd_human_interface_device::device::keyboard::NKROBootKeyboardInterface::default_config();
+        let mouse=usbd_human_interface_device::device::mouse::WheelMouseInterface::default_config();
+        let consumer=usbd_human_interface_device::device::consumer::ConsumerControlInterface::default_config();
+
+        let config=RawConfInterface::default_config();
+        
+        //control.inner_config.description=Some("Ninja Keyboard Corne Control");
+        
+
+        
+        let usb_bus= match unsafe { USB_BUS.as_ref() } {
+            Some(usb_bus)=> {
+                usb_bus
+            },
+            _=>{                
+                panic!("no usb_bus")
+            }
+        };
+
+        let hid_kb:UsbKb  = UsbHidClassBuilder::new()
+                    .add_interface(nkro)
+                    .add_interface(mouse)
+                    .add_interface(consumer)
+                    .add_interface(config)
+                    .build(usb_bus /*unsafe { USB_BUS.as_ref().unwrap() }*/);
+                
+        let usb_dev:UsbDev = UsbDeviceBuilder::new(usb_bus /*unsafe { USB_BUS.as_ref().unwrap() }*/, UsbVidPid(0xcaca, 0x0001))
+        .manufacturer("Nicguzzo")
+        .product("Ninja Keyboard Corne")
+        .serial_number("0")
+        .build();
+
+        //unsafe {
+        //        NVIC::unmask(Interrupt::USB_HP_CAN_TX);
+        //        NVIC::unmask(Interrupt::USB_LP_CAN_RX0);
+        //}
+        info!("Usb done.");
+        //reset_all::spawn().ok();
         let ninja_kb= NinjaKb{
             rows,
             cols,
@@ -303,7 +321,7 @@ mod app {
             layer,
             led
         };
-        (Shared { usb_dev, hid_kb }, Local {timer,ninja_kb,i2c}, init::Monotonics())
+        (Shared {  usb_dev, hid_kb }, Local {timer,ninja_kb,i2c}, init::Monotonics())
     }
 
     #[task(binds = USB_HP_CAN_TX, priority = 2, shared = [usb_dev, hid_kb])]
@@ -323,10 +341,10 @@ mod app {
             usb_poll(usb_dev, hid_kb);
         });
     }
-    #[task(binds = TIM2, priority = 2, shared = [hid_kb], local=[timer, ninja_kb,i2c])]
+    #[task(binds = TIM2, priority = 1, shared = [hid_kb], local=[timer, ninja_kb,i2c])]
     fn tick(cx: tick::Context) {
         let mut hid_kb = cx.shared.hid_kb;
-
+        //cx.local.ninja_kb.led.set_low();
         (&mut hid_kb).lock(|hid_kb| {
             let keyboard = hid_kb.interface::<NKROBootKeyboardInterface<'_, _>, _>();
             //let control = hid_kb.interface::<ConsumerControlInterface<'_, _>, _>();
@@ -343,7 +361,7 @@ mod app {
             }
             match keyboard.read_report(){
                 Err(UsbError::WouldBlock) => {},                    
-                Ok(_s) => { 
+                Ok(_leds) => { 
                     info!("read led report")
                 }
                 Err(_e) => {
@@ -365,7 +383,13 @@ mod app {
         });
         cx.local.timer.clear_interrupt(Event::Update);
     }
-    
+    #[idle()]
+    fn idle(_cx: idle::Context) -> ! {
+        info!("idle");
+        loop {
+            cortex_m::asm::nop();
+        }
+    }    
 }
 
 fn usb_poll(usb_dev: &mut UsbDev, keyboard: &mut UsbKb) {
@@ -390,7 +414,8 @@ fn ninja(ninja_kb:&mut NinjaKb,i2c:&mut I2cT)-> bool{
     let mut buffer:[u8;SECONDARY_KB_N_BYTES]=[0;SECONDARY_KB_N_BYTES];
     match i2c.write_read(SECONDARY_KB_ADDRESS, &bytes, &mut buffer){
         Ok(_) =>{
-            let mut b=0;
+            ninja_kb.led.set_low();
+            let mut b;
             let mut k:usize=0;
             let mut bit:u8=7;
             for col in 0..COLS  {
@@ -407,7 +432,10 @@ fn ninja(ninja_kb:&mut NinjaKb,i2c:&mut I2cT)-> bool{
                 }
             }
         },
-        Err(_) => info!("i2c read/write error"),
+        Err(_) =>{
+            
+            info!("i2c read/write error")
+        }
     }
 
     //trace!("matrix_l {}", ninja_kb.matrix);
@@ -420,7 +448,7 @@ fn ninja(ninja_kb:&mut NinjaKb,i2c:&mut I2cT)-> bool{
             for row in 0..ROWS{
                 //pressed        
                 if mat[m][row][col] && !mat_last[m][row][col]{      
-                    ninja_kb.led.set_low();                   
+                    ninja_kb.led.set_low();
                     match side[m][row][col]{
                         Key::Layer=>{
                             ninja_kb.layer=1;

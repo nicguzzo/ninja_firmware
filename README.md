@@ -1,15 +1,33 @@
 # Ninja keyboard firmware
 
+## Requirements
+
+- requires rust nightly
+``` console
+rustup toolchain install nightly
+```
+- arm toolchain
+``` console
+rustup target install thumbv7m-none-eabi
+```
+
+- flip-link stack overflow protection
+``` console
+cargo install flip-link
+```
+
+- probe-run
+``` console
+cargo install probe-run
+```
 ## Build
 
-- Clone [Embassy](https://github.com/embassy-rs/embassy) and init its submodules one folder up from ninja_firmware repo
-`$ git clone https://github.com/embassy-rs/embassy`
-`$ cd embassy`
-`$ git submodule init`
-`$ git submodule update`
-`$ cargo install probe-run`
-`$ cd ..`
-- Conect stlink to swd header of bluepill board
-- Build Ninja firmware
-`$ cd ninja_firmware`
-`$ cargo run`
+### debug
+``` console
+cargo run
+```
+
+### release
+``` console
+cargo run -r
+```
