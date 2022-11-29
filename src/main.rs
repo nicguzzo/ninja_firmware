@@ -1,448 +1,481 @@
-#![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
+#![no_std]
 
-use core::sync::atomic::{AtomicBool, Ordering, AtomicUsize};
+use defmt_rtt as _; 
+// global logger
+use panic_probe as _;
 
-use defmt::{panic, *};
-use embassy_executor::Spawner;
-use embassy_futures::join::join;
-use embassy_futures::select::{select, Either};
-use embassy_stm32::dma::NoDma;
-use embassy_stm32::gpio::{Level, Output, Speed, Input, Pull, AnyPin,Pin};
-use embassy_stm32::i2c::{I2c, TimeoutI2c, Error};
-use embassy_stm32::pwm::Channel;
-use embassy_stm32::pwm::simple_pwm::{SimplePwm,PwmPin};
-use embassy_stm32::time::{Hertz, khz};
-use embassy_stm32::usb::{Driver, Instance};
-use embassy_stm32::{interrupt, Config};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Timer,Instant};
-use embassy_usb::class::hid::{HidReaderWriter, ReportId, RequestHandler, State};
-use embassy_usb::control::{OutResponse, ControlHandler, Request};
-use embassy_usb::{Builder, DeviceStateHandler};
-use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 
-use {defmt_rtt as _, panic_probe as _};
-use keys::*;
 
+#[defmt::panic_handler]
+fn panic() -> ! {
+    cortex_m::asm::udf()
+}
+use frunk::{HCons, HNil};    
+use stm32f1xx_hal::device::I2C2;
+use stm32f1xx_hal::gpio::{ErasedPin,Input,PushPull, PullUp, Output, Alternate, OpenDrain, PB10, PB11};
+use stm32f1xx_hal::{prelude::*, gpio::PinState};
+use stm32f1xx_hal::usb::{UsbBus, UsbBusType};
+use stm32f1xx_hal::{pac, usb::Peripheral};
+use stm32f1xx_hal::flash::FlashWriter;
+use cortex_m::peripheral::NVIC;
+use stm32f1xx_hal::{timer::{Event,CounterUs, SysDelay}, device::Interrupt, i2c::{BlockingI2c, Mode, DutyCycle}};
+
+use usb_device::class_prelude::*;
+use usb_device::prelude::*;
+use usbd_human_interface_device::device::consumer::{MultipleConsumerReport, ConsumerControlInterface};
+use usbd_human_interface_device::device::mouse::{WheelMouseReport, WheelMouseInterface};
+use usbd_human_interface_device::page::{Keyboard,Consumer};
+use usbd_human_interface_device::device::keyboard::{KeyboardLedsReport, NKROBootKeyboardInterface};
+use usbd_human_interface_device::prelude::*;
+use defmt::{info, trace};
+//use cortex_m::asm::delay;
+mod config_class;
+use config_class::RawConfInterface;
+
+const REPORT_BUFF_MAX:usize=42;
 const COLS:usize=6;
 const ROWS:usize=4;
 const LAYERS:usize=2;
-//const DEBOUNCE:u64=5;
-
 const SECONDARY_KB_ADDRESS: u8 = 0x08;
-const WHOAMI: u8 = 0x0F;
 const SECONDARY_KB_N_BYTES:usize = 3;
+type UsbDev<'a> =UsbDevice<'a, UsbBus<Peripheral>>;
 
-static SUSPENDED: AtomicBool = AtomicBool::new(false);
-mod keys;
+type UsbKb<'a> =
+UsbHidClass<
+    UsbBus<Peripheral>, 
+        HCons<RawConfInterface<'a, UsbBus<Peripheral>>, 
+        HCons<ConsumerControlInterface<'a, UsbBus<Peripheral>>, 
+        HCons<WheelMouseInterface<'a, UsbBus<Peripheral>>, 
+        HCons<NKROBootKeyboardInterface<'a,UsbBus<Peripheral>>, HNil>>>>>;
 
 
-#[embassy_executor::main]
-async fn main(spawner: Spawner) {
+type I2cT=stm32f1xx_hal::i2c::blocking::BlockingI2c::<I2C2, (PB10<Alternate<OpenDrain>>, PB11<Alternate<OpenDrain>>)>;
+type Matrix= [[bool; COLS]; ROWS];
+
+type Rows = [ErasedPin<Input<PullUp>>; ROWS];
+type Cols = [ErasedPin<Output<PushPull>>; COLS];
+
+type ReportBuff=[Keyboard;REPORT_BUFF_MAX];
+enum Key{
+    Code(Keyboard),
+    Layer,
+    NoKey,
+}
+type Side = [[Key; COLS]; ROWS];
+struct Keys{
+    left:[Side;LAYERS],
+    right:[Side;LAYERS]
+}
+pub struct NinjaKb{
+    rows:Rows,
+    cols:Cols,
+    matrix:Matrix,    
+    matrix_last:Matrix,
+    sec_matrix:Matrix,
+    sec_matrix_last:Matrix,
+    keys:Keys,
+    report_buff:ReportBuff,
     
-    //enable PB3 and PB4 as gpio
-    unsafe{        
-        embassy_stm32::pac::RCC.apb2enr().modify(|w| w.set_afioen(true));        
-        embassy_stm32::pac::AFIO.mapr().modify(|w| w.set_swj_cfg(0b010));
-    }
-    let mut config = Config::default();
-    config.rcc.hse = Some(Hertz(8_000_000));
-    config.rcc.sys_ck = Some(Hertz(48_000_000));
-    config.rcc.pclk1 = Some(Hertz(24_000_000));
-    
-    let mut p = embassy_stm32::init(config);
-    
-    let mut led = Output::new(p.PC13.degrade(), Level::High, Speed::Low);
+    layer:usize,
+    led:ErasedPin<Output<PushPull>>
+}
 
-    
-    //RGB LED 
-    //let ch_r = PwmPin::new_ch1(p.PA6);
-    //let ch_g = PwmPin::new_ch2(p.PA7);
-    //let ch_b = PwmPin::new_ch4(p.PB1);    
-    //let mut led_rgb_pwm = SimplePwm::new(p.TIM3, Some(ch_r), Some(ch_g),None, Some(ch_b), khz(10));    
-    //let max = led_rgb_pwm.get_max_duty();    
-    //led_rgb_pwm.enable(Channel::Ch4);
-    //led_rgb_pwm.set_duty(Channel::Ch4, 0);
-
-    
-
-    let row0 = Output::new(p.PB5.degrade(),Level::Low, Speed::Low); 
-    let row1 = Output::new(p.PB6.degrade(),Level::Low, Speed::Low);
-    let row2 = Output::new(p.PB7.degrade(),Level::Low, Speed::Low);
-    let row3 = Output::new(p.PB8.degrade(),Level::Low, Speed::Low);
-
-    let col0 = Input::new(p.PB12.degrade(),Pull::Down);
-    let col1 = Input::new(p.PB13.degrade(),Pull::Down);
-    let col2 = Input::new(p.PB14.degrade(),Pull::Down);
-    let col3 = Input::new(p.PB15.degrade(),Pull::Down);
-    let col4 = Input::new(p.PB3.degrade(), Pull::Down);
-    let col5 = Input::new(p.PB4.degrade(), Pull::Down);
-
-    //keyboard matrix
-    type Matrix= [[bool; COLS]; ROWS];
-    let mut matrix:Matrix=[ [false; COLS]; ROWS];    
-    let mut matrix_last:Matrix= [ [false; COLS]; ROWS];
-
-    let mut sec_matrix:Matrix=[ [false; COLS]; ROWS];    
-    let mut sec_matrix_last:Matrix= [ [false; COLS]; ROWS];
-
-    //let mut matrix_debounce:[[u64; COLS]; ROWS]= [ [0; COLS]; ROWS];
-
-    enum Key{
-        Code(u8),
-        Modifier(u8),
-        Layer,
-        NoKey,
-    }
-    type Side = [[Key; COLS]; ROWS];
-    let mut keys_left:[Side;LAYERS]=[
-        [
-            [Key::Code(KEY_ESC)       ,Key::Code(KEY_Q),Key::Code(KEY_W),Key::Code(KEY_E),Key::Code(KEY_R),Key::Code(KEY_T) ],
-            [Key::Code(KEY_TAB)       ,Key::Code(KEY_A),Key::Code(KEY_S),Key::Code(KEY_D),Key::Code(KEY_F),Key::Code(KEY_G) ],
-            [Key::Modifier(KEY_MOD_LSHIFT) ,Key::Code(KEY_Z),Key::Code(KEY_X),Key::Code(KEY_C),Key::Code(KEY_V),Key::Code(KEY_B) ],
-            [Key::NoKey,Key::NoKey,Key::NoKey,Key::Modifier(KEY_MOD_LCTRL),Key::Modifier(KEY_MOD_LMETA),Key::Layer ],
-        ],
-        [
-            [Key::Code(KEY_F1)  ,Key::Code(KEY_F2),Key::Code(KEY_F3),Key::Code(KEY_F4)        ,Key::Code(KEY_F5),Key::Code(KEY_F6) ],
-            [Key::Code(KEY_1)   ,Key::Code(KEY_2) ,Key::Code(KEY_3) ,Key::Code(KEY_4)         ,Key::Code(KEY_5) ,Key::Code(KEY_6)  ],
-            [Key::Code(KEY_TAB) ,Key::Code(KEY_Z) ,Key::Code(KEY_X) ,Key::Code(KEY_C)         ,Key::Code(KEY_V) ,Key::Code(KEY_B)  ],
-            [Key::NoKey,Key::NoKey,Key::NoKey ,Key::Modifier(KEY_MOD_LALT),Key::Modifier(KEY_MOD_RMETA),Key::Layer ],
-        ]
-    ];
-
-    let mut keys_right:[Side; LAYERS]=[
-        [
-            [Key::Code(KEY_Y), Key::Code(KEY_U),Key::Code(KEY_I),Key::Code(KEY_O),Key::Code(KEY_P),Key::Code(KEY_BACKSPACE) ],
-            [Key::Code(KEY_H), Key::Code(KEY_J),Key::Code(KEY_K),Key::Code(KEY_L),Key::Code(KEY_F),Key::Code(KEY_ENTER) ],
-            [Key::Code(KEY_N), Key::Code(KEY_M),Key::Code(KEY_X),Key::Code(KEY_LEFTBRACE),Key::Code(KEY_RIGHTBRACE),Key::Code(KEY_APOSTROPHE) ],
-            [Key::Code(KEY_ENTER),Key::Code(KEY_SPACE),Key::Code(KEY_DOT) ,Key::NoKey,Key::NoKey,Key::NoKey]
-        ],
-        [
-            [Key::Code(KEY_F7)    ,Key::Code(KEY_F8)  ,Key::Code(KEY_F9)    ,Key::Code(KEY_F10)   ,Key::Code(KEY_F11)     ,Key::Code(KEY_F12) ],
-            [Key::Code(KEY_6)     ,Key::Code(KEY_UP)  ,Key::Code(KEY_7)     ,Key::Code(KEY_8)     ,Key::Code(KEY_9)       ,Key::Code(KEY_0)   ],
-            [Key::Code(KEY_LEFT)  ,Key::Code(KEY_DOWN),Key::Code(KEY_EQUAL) ,Key::Code(KEY_PAGEUP),Key::Code(KEY_PAGEDOWN),Key::Code(KEY_MINUS) ],
-            [Key::Code(KEY_DELETE),Key::Code(KEY_HOME),Key::Code(KEY_END)   ,Key::NoKey           ,Key::NoKey              ,Key::NoKey]
-        ]
-    ];
-    let mut layer:usize=0;
-    let mut modifier:u8=0;
-    let mut rows:[Output<'static,AnyPin>; ROWS]=[row0,row1,row2,row3];
-    let cols:[Input <'static,AnyPin>; COLS]=[col0,col1,col2,col3,col4,col5];
-
-    {
-        // BluePill board has a pull-up resistor on the D+ line.
-        // Pull the D+ pin down to send a RESET condition to the USB bus.
-        // This forced reset is needed only for development, without it host
-        // will not reset your device when you upload new firmware.
-        let _dp = Output::new(&mut p.PA12, Level::Low, Speed::Low);
-        Timer::after(Duration::from_millis(100)).await;
+#[rtic::app(device = stm32f1xx_hal::pac)]
+mod app {
+    use crate::*;
+    #[shared]
+    struct Shared {
+        usb_dev: UsbDevice<'static, UsbBusType>,
+        hid_kb: UsbKb<'static>,
+        //ninja_kb:NinjaKb
     }
 
-    let irq = interrupt::take!(I2C2_EV);    
-    let mut i2c = I2c::new(p.I2C2, p.PB10, p.PB11,irq,NoDma,NoDma,Hertz(100_000),Default::default());    
-    let mut timeout_i2c = TimeoutI2c::new(&mut i2c, Duration::from_millis(50));
-    let i2c_data_send = [0u8; 1];
-    let mut i2c_data_recv = [0u8; SECONDARY_KB_N_BYTES];
+    #[local]
+    struct Local {
+        timer:CounterUs<pac::TIM2>,
+        ninja_kb:NinjaKb,
+        i2c:I2cT
+    }
+
+    #[init]
+    fn init(cx: init::Context) -> (Shared, Local, init::Monotonics){    
+        static mut USB_BUS:Option<UsbBusAllocator<UsbBus<Peripheral>>>=None;
+        
+        let mut flash = cx.device.FLASH.constrain();
+        let rcc = cx.device.RCC.constrain();
+        /*let clocks = rcc
+                .cfgr
+                .use_hse(8.MHz())
+                .sysclk(72.MHz())
+                .pclk1(48.MHz())
+                .freeze(&mut flash.acr);*/
+
+        let clocks = rcc
+                .cfgr
+                .use_hse(8.MHz())
+                .sysclk(72.MHz())
+                .pclk1(36.MHz())
+                .freeze(&mut flash.acr);
+
+        /*let clocks = rcc
+                .cfgr
+                .use_hse(8.MHz())
+                .sysclk(48.MHz())
+                .pclk1(24.MHz())
+                .freeze(&mut flash.acr);*/
+
+        assert!(clocks.usbclk_valid());
+
+        //let mut delay = cx.core.SYST.delay(&clocks);
+
+        let mut afio = cx.device.AFIO.constrain();
+        let mut gpioa = cx.device.GPIOA.split();
+        let mut gpiob = cx.device.GPIOB.split();
+        let mut gpioc = cx.device.GPIOC.split();
+        
+        //disable jtag pins
+        let (_gpioa_pa15, gpiob_pb3, gpiob_pb4) = afio.mapr.disable_jtag(gpioa.pa15, gpiob.pb3, gpiob.pb4);
+        //let mut timer = Timer::syst(cp.SYST, &clocks).counter_us();
+
+        let mut led = gpioc.pc13.into_push_pull_output(&mut gpioc.crh).erase();
+        led.set_high();
+  
+        let row0 =gpiob.pb5.into_pull_up_input(&mut gpiob.crl).erase();
+        let row1 =gpiob.pb6.into_pull_up_input(&mut gpiob.crl).erase();
+        let row2 =gpiob.pb7.into_pull_up_input(&mut gpiob.crl).erase();
+        let row3 =gpiob.pb8.into_pull_up_input(&mut gpiob.crh).erase();
+
+        let mut col0 = gpiob.pb12.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase();
+        let mut col1 = gpiob.pb13.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase();
+        let mut col2 = gpiob.pb14.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase();
+        let mut col3 = gpiob.pb15.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase();
+        let mut col4 =  gpiob_pb3.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase();
+        let mut col5 =  gpiob_pb4.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase();
+
+        
+        let layer:usize=0;
+        let rows:Rows=[row0,row1,row2,row3];
+        let cols:Cols=[col0,col1,col2,col3,col4,col5];
+
+        //keyboard matrix
+        
+        let matrix:Matrix=[ [false; COLS]; ROWS];    
+        let matrix_last:Matrix= [ [false; COLS]; ROWS];
     
-     // Create the driver, from the HAL.
-    let irq = interrupt::take!(USB_LP_CAN1_RX0);
-    let driver = Driver::new(p.USB, irq, p.PA12, p.PA11);
-
-
-    let mut config =  embassy_usb::Config::new(0xcaca,0xd1ce);
+        let sec_matrix:Matrix=[ [false; COLS]; ROWS];    
+        let sec_matrix_last:Matrix= [ [false; COLS]; ROWS];
     
-    config.manufacturer = Some("Nicguzzo");
-    config.product = Some("Ninja corne");
-    config.serial_number = Some("12345678");
-    config.max_power = 500;
-    config.max_packet_size_0 = 64;
-    config.supports_remote_wakeup = true;
-    config.device_class = 0x03;
-    config.device_sub_class = 0x01;
-    config.device_protocol = 0x01;
-    //config.composite_with_iads=true;
-
-    let mut device_descriptor = [0; 256];
-    let mut config_descriptor = [0; 256];
-    let mut bos_descriptor = [0; 256];
-    let mut control_buf = [0; 64];
-    let request_handler = MyRequestHandler {};
-    let device_state_handler = MyDeviceStateHandler::new();
-
-    let mut state = State::new();
-    /*let mut state= State {
-        control: MaybeUninit::uninit(),
-        out_report_offset: AtomicUsize::new(0),
-    };*/
-
-    let mut builder = Builder::new(
-        driver,
-        config,
-        &mut device_descriptor,
-        &mut config_descriptor,
-        &mut bos_descriptor,
-        &mut control_buf,
-        Some(&device_state_handler),
-    );
+        //let mut matrix_debounce:[[u64; COLS]; ROWS]= [ [0; COLS]; ROWS];
     
-
-    // Create classes on the builder.
-    let config = embassy_usb::class::hid::Config {
-        report_descriptor: KeyboardReport::desc(),
-        request_handler: Some(&request_handler),
-        poll_ms: 60,
-        max_packet_size: 64,
-    };
-    let hid = HidReaderWriter::<_, 1, 8>::new(&mut builder, &mut state, config);
-
-    // Build the builder.
-    let mut usb = builder.build();
-    
-    let remote_wakeup: Signal<CriticalSectionRawMutex, _> = Signal::new();
-
-    // Run the USB device.
-    let usb_fut = async {
-        loop {
-            usb.run_until_suspend().await;
-            match select(usb.wait_resume(), remote_wakeup.wait()).await {
-                Either::First(_) => (),
-                Either::Second(_) => unwrap!(usb.remote_wakeup().await),
+        
+        let mut keys=Keys{
+            left:[
+                [
+                    [Key::Code(Keyboard::Escape),Key::Code(Keyboard::Q),Key::Code(Keyboard::W),Key::Code(Keyboard::E),Key::Code(Keyboard::R),Key::Code(Keyboard::T)],
+                    [Key::Code(Keyboard::Tab),Key::Code(Keyboard::A),Key::Code(Keyboard::S),Key::Code(Keyboard::D),Key::Code(Keyboard::F),Key::Code(Keyboard::G)],
+                    [Key::Code(Keyboard::LeftShift),Key::Code(Keyboard::Z),Key::Code(Keyboard::X),Key::Code(Keyboard::C),Key::Code(Keyboard::V),Key::Code(Keyboard::B)],
+                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::Code(Keyboard::LeftControl),Key::Code(Keyboard::LeftGUI),Key::Layer ],
+                ],
+                [
+                    [Key::Code(Keyboard::F1),Key::Code(Keyboard::F2),Key::Code(Keyboard::F3),Key::Code(Keyboard::F4),Key::Code(Keyboard::F5),Key::Code(Keyboard::F6) ],
+                    [Key::Code(Keyboard::Keyboard1),Key::Code(Keyboard::Keyboard1),Key::Code(Keyboard::Keyboard2),Key::Code(Keyboard::Keyboard3),Key::Code(Keyboard::Keyboard4),Key::Code(Keyboard::Keyboard5)],
+                    [Key::Code(Keyboard::Backslash),Key::Code(Keyboard::Z),Key::Code(Keyboard::X) ,Key::Code(Keyboard::C), Key::Code(Keyboard::V) ,Key::Code(Keyboard::B)  ],
+                    [Key::NoKey,Key::NoKey,Key::NoKey ,Key::Code(Keyboard::LeftAlt),Key::Code(Keyboard::RightGUI),Key::Layer ],
+                ]
+            ],
+            right:[
+                [
+                    [Key::Code(Keyboard::Y), Key::Code(Keyboard::U),Key::Code(Keyboard::I),Key::Code(Keyboard::O),Key::Code(Keyboard::P),Key::Code(Keyboard::DeleteBackspace) ],
+                    [Key::Code(Keyboard::H), Key::Code(Keyboard::J),Key::Code(Keyboard::K),Key::Code(Keyboard::L),Key::Code(Keyboard::F),Key::Code(Keyboard::ReturnEnter) ],
+                    [Key::Code(Keyboard::N), Key::Code(Keyboard::M),Key::Code(Keyboard::X),Key::Code(Keyboard::LeftBrace),Key::Code(Keyboard::RightBrace),Key::Code(Keyboard::Apostrophe) ],
+                    [Key::Code(Keyboard::ReturnEnter),Key::Code(Keyboard::Space),Key::Code(Keyboard::Dot) ,Key::NoKey,Key::NoKey,Key::NoKey]
+                ],
+                [
+                    [Key::Code(Keyboard::F7)    ,Key::Code(Keyboard::F8)  ,Key::Code(Keyboard::F9)    ,Key::Code(Keyboard::F10)   ,Key::Code(Keyboard::F11)     ,Key::Code(Keyboard::F12) ],
+                    [Key::Code(Keyboard::Keyboard6),Key::Code(Keyboard::UpArrow)  ,Key::Code(Keyboard::Keyboard7),Key::Code(Keyboard::Keyboard8),Key::Code(Keyboard::Keyboard9),Key::Code(Keyboard::Keyboard0)],
+                    [Key::Code(Keyboard::LeftArrow)  ,Key::Code(Keyboard::DownArrow),Key::Code(Keyboard::Equal) ,Key::Code(Keyboard::PageUp),Key::Code(Keyboard::PageDown),Key::Code(Keyboard::Minus) ],
+                    [Key::Code(Keyboard::DeleteForward),Key::Code(Keyboard::Home),Key::Code(Keyboard::End)   ,Key::NoKey           ,Key::NoKey              ,Key::NoKey]
+                ]
+            ]
+        };
+        let report_buff:ReportBuff = [Keyboard::NoEventIndicated;REPORT_BUFF_MAX];
+        
+        
+        //let k_size=core::mem::size_of::<[Side; LAYERS]>()*2;
+        //info!("size {}",k_size);
+        /*
+            let flash_writer=flash.writer(stm32f1xx_hal::flash::SectorSize::Sz1K, stm32f1xx_hal::flash::FlashSize::Sz64K);
+            let offset=1024*63;
+            let mark=flash_writer.read(offset, 100);
+            match mark{
+                Ok(m)=>{
+                    info!("flash mark{}",m);
+                    //if m[0]==255{ //no flash data
+                        //flash_writer.write(offset, data)
+                    //}
+                },
+                _=>info!("error reading mark from flash")
             }
+        */
+        //USB
+        info!("Start Usb");
+        let mut usb_dp = gpioa.pa12.into_push_pull_output(&mut gpioa.crh);
+        usb_dp.set_low();
+        cortex_m::asm::delay(clocks.sysclk().raw() / 100);
+        cortex_m::asm::delay(clocks.sysclk().raw() / 100);
+
+        let usb = Peripheral {
+            usb: cx.device.USB,
+            pin_dm: gpioa.pa11,
+            pin_dp: usb_dp.into_floating_input(&mut gpioa.crh),
+        };        
+        let usb_bus = UsbBus::new(usb);
+
+        unsafe {
+            USB_BUS.replace(usb_bus);
         }
-    };
 
-    let (reader, mut writer) = hid.split();
+        let nkro=usbd_human_interface_device::device::keyboard::NKROBootKeyboardInterface::default_config();
+        let mouse=usbd_human_interface_device::device::mouse::WheelMouseInterface::default_config();
+        let mut consumer=usbd_human_interface_device::device::consumer::ConsumerControlInterface::default_config();
 
-    // Do stuff with the class!
-    let in_fut = async {
-        //const NKRO:usize=21*2; //corne
-        //let mut report_nkro:[u8;NKRO]=[0;NKRO];
-        //limited to 6 keys, for now
-        let report_buff_max=6;
-        let mut report_lim6:[u8;6]=[0;6];
-        //let mut instant= Instant::now();
-        loop {
-            for row in 0..ROWS{
-                rows[row].set_high();
-                for col in 0..COLS  {
-                    matrix_last[row][col]=matrix[row][col];
-                    matrix[row][col]=cols[col].is_high();
-                }
-                rows[row].set_low();
-            }
-            //read i2c sync
-            let res=timeout_i2c.blocking_write_read(SECONDARY_KB_ADDRESS, &i2c_data_send,&mut i2c_data_recv);
-            match res{
-                Ok(_) => {
-                    /*info!("sec keys \n{:08b}\n{:08b}\n{:08b}\n",
-                    i2c_data_recv[0],
-                    i2c_data_recv[1],
-                    i2c_data_recv[2]
-                    );*/
-                    let mut b=0;
-                    let mut k:usize=0;
-                    let mut bit:u8=7;
-                    for col in 0..COLS  {
-                        for row in 0..ROWS{
-                            sec_matrix_last[row][col]=sec_matrix[row][col];
-                            b=k/8;
-                            sec_matrix[row][col]= ((i2c_data_recv[b]>>bit)&0x01) != 0;
-                            if bit==0{
-                                bit=7;
-                            }else{
-                                bit=bit-1;
-                            }
-                            k+=1;
-                        }
+        let config=RawConfInterface::default_config();
+        
+        //control.inner_config.description=Some("Ninja Keyboard Corne Control");
+        
+        let mut hid_kb:UsbKb  = UsbHidClassBuilder::new()
+            .add_interface(nkro)
+            .add_interface(mouse)
+            .add_interface(consumer)
+            .add_interface(config)
+            .build(unsafe { USB_BUS.as_ref().unwrap() });
+        
+        let mut usb_dev:UsbDev = UsbDeviceBuilder::new(unsafe { USB_BUS.as_ref().unwrap() }, UsbVidPid(0xcaca, 0x0001))
+        .manufacturer("Nicguzzo")
+        .product("Ninja Keyboard Corne")
+        .serial_number("0")
+        .build();
+        
+        unsafe {
+                NVIC::unmask(Interrupt::USB_HP_CAN_TX);
+                NVIC::unmask(Interrupt::USB_LP_CAN_RX0);
+        }
+        
+        info!("Usb done.");
+        
+        info!("Conf tick timer.");
+        let mut timer = cx.device.TIM2.counter_us(&clocks);
+        timer.start(1.millis()).unwrap();
+        timer.listen(Event::Update);
+        info!("Conf tick timer done.");
+
+        //i2c
+        //let i2c=None;
+        info!("Conf i2c.");
+        let sda = gpiob.pb11.into_alternate_open_drain(&mut gpiob.crh);
+        let scl = gpiob.pb10.into_alternate_open_drain(&mut gpiob.crh);
+    
+        let i2c = BlockingI2c::i2c2(
+            cx.device.I2C2,
+            (scl, sda),
+            Mode::Fast {
+                frequency: 400.kHz(),
+                duty_cycle: DutyCycle::Ratio16to9,
+            },
+            clocks,
+            100,
+            10,
+            100,
+            100,
+        );
+        info!("Conf i2c done.");
+
+        let ninja_kb= NinjaKb{
+            rows,
+            cols,
+            matrix,
+            matrix_last,
+            sec_matrix,
+            sec_matrix_last,
+            keys,
+            report_buff,
+            layer,
+            led
+        };
+        (Shared { usb_dev, hid_kb }, Local {timer,ninja_kb,i2c}, init::Monotonics())
+    }
+
+    #[task(binds = USB_HP_CAN_TX, priority = 2, shared = [usb_dev, hid_kb])]
+    fn usb_tx(cx: usb_tx::Context) {
+        let mut usb_dev = cx.shared.usb_dev;
+        let mut hid_kb = cx.shared.hid_kb;
+        (&mut usb_dev, &mut hid_kb).lock(|usb_dev, hid_kb| {
+            usb_poll(usb_dev, hid_kb);
+        });
+    }
+
+    #[task(binds = USB_LP_CAN_RX0, priority = 2, shared = [usb_dev, hid_kb])]
+    fn usb_rx(cx: usb_rx::Context) {
+        let mut usb_dev = cx.shared.usb_dev;
+        let mut hid_kb = cx.shared.hid_kb;
+        (&mut usb_dev, &mut hid_kb).lock(|usb_dev, hid_kb| {
+            usb_poll(usb_dev, hid_kb);
+        });
+    }
+    #[task(binds = TIM2, priority = 2, shared = [hid_kb], local=[timer, ninja_kb,i2c])]
+    fn tick(cx: tick::Context) {
+        let mut hid_kb = cx.shared.hid_kb;
+
+        (&mut hid_kb).lock(|hid_kb| {
+            let keyboard = hid_kb.interface::<NKROBootKeyboardInterface<'_, _>, _>();
+            //let control = hid_kb.interface::<ConsumerControlInterface<'_, _>, _>();
+            if ninja(cx.local.ninja_kb,cx.local.i2c)
+            {
+                match keyboard.write_report(cx.local.ninja_kb.report_buff) {
+                    Err(UsbHidError::WouldBlock) => {info!("WouldBlock")}
+                    Err(UsbHidError::Duplicate) => {info!("Duplicate")}
+                    Ok(_) => {}
+                    Err(_e) => {
+                        info!("Failed to write keyboard report: ")
                     }
-                },
-                Err(Error::Timeout) => {
-                    led.set_low();
-                    error!("Operation timed out");
-                },
-                Err(e) => error!("I2c write Error: {:?}", e),                    
+                };
+            }
+            match keyboard.read_report(){
+                Err(UsbError::WouldBlock) => {},                    
+                Ok(_s) => { 
+                    info!("read led report")
+                }
+                Err(_e) => {
+                    info!("Failed to read keyboard report: ")
+                }
+            }
+            let control = hid_kb.interface::<RawConfInterface<'_, _>, _>();
+            //let data = &mut [0;64];
+            match control.read_report(){
+                Err(UsbError::WouldBlock) => {},                    
+                Ok(s) => { 
+                    info!("read conf report {}",s.packet)
+                }
+                Err(_e) => {
+                    info!("Failed to read conf report: ")
+                }
             }
             
-            let mut event=false;
-            {
-                let mat:[&Matrix;2] =[&matrix,&sec_matrix];
-                let mat_last:[&Matrix;2] =[&matrix_last,&sec_matrix_last];
-                let side:[&Side;2]=[&keys_left[layer],&keys_right[layer]];
-                for m in 0..2{
-                    for row in 0..ROWS{
-                        for col in 0..COLS  {
-                            //pressed        
-                            if mat[m][row][col] && !mat_last[m][row][col]{                         
-                                match side[m][row][col]{
-                                    Key::Layer=>{
-                                        layer=1;
-                                        event=false;
-                                        continue;
-                                    },
-                                    Key::Modifier(k)=>{
-                                        modifier|=k;
-                                        event=true;
-                                        //info!("p modifier {:08b}",modifier)
-                                    },
-                                    Key::Code(code)=>{
-                                        info!("code {:08b}",code);
-                                        for i in 0..report_buff_max{
-                                            if report_lim6[i]==0{
-                                                event=true;
-                                                report_lim6[i]=code;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    _ =>()
-                                }                        
+        });
+        cx.local.timer.clear_interrupt(Event::Update);
+    }
+    
+}
+
+fn usb_poll(usb_dev: &mut UsbDev, keyboard: &mut UsbKb) {
+    if usb_dev.poll(&mut [keyboard]) {
+        keyboard.poll();
+    }
+}
+
+
+fn ninja(ninja_kb:&mut NinjaKb,i2c:&mut I2cT)-> bool{
+    let mut event=false;
+    for col in 0..COLS  {
+        ninja_kb.cols[col].set_low();
+        for row in 0..ROWS {
+            ninja_kb.matrix_last[row][col]=ninja_kb.matrix[row][col];
+            ninja_kb.matrix[row][col]=ninja_kb.rows[row].is_low();
+        }
+        ninja_kb.cols[col].set_high();
+    }
+    
+    let bytes :[u8;1]=[0;1];
+    let mut buffer:[u8;SECONDARY_KB_N_BYTES]=[0;SECONDARY_KB_N_BYTES];
+    match i2c.write_read(SECONDARY_KB_ADDRESS, &bytes, &mut buffer){
+        Ok(_) =>{
+            let mut b=0;
+            let mut k:usize=0;
+            let mut bit:u8=7;
+            for col in 0..COLS  {
+                for row in 0..ROWS{
+                    ninja_kb.sec_matrix_last[row][col]=ninja_kb.sec_matrix[row][col];
+                    b=k/8;
+                    ninja_kb.sec_matrix[row][col]= ((buffer[b]>>bit)&0x01) != 0;
+                    if bit==0{
+                        bit=7;
+                    }else{
+                        bit=bit-1;
+                    }
+                    k+=1;
+                }
+            }
+        },
+        Err(_) => info!("i2c read/write error"),
+    }
+
+    //trace!("matrix_l {}", ninja_kb.matrix);
+    //trace!("matrix_r {}", ninja_kb.sec_matrix);
+    let mat:[&Matrix;2] =[&ninja_kb.matrix,&ninja_kb.sec_matrix];
+    let mat_last:[&Matrix;2] =[&ninja_kb.matrix_last,&ninja_kb.sec_matrix_last];
+    let side:[&Side;2]=[&ninja_kb.keys.left[ninja_kb.layer],&ninja_kb.keys.right[ninja_kb.layer]];
+    for m in 0..2{
+        for col in 0..COLS  {
+            for row in 0..ROWS{
+                //pressed        
+                if mat[m][row][col] && !mat_last[m][row][col]{      
+                    ninja_kb.led.set_low();                   
+                    match side[m][row][col]{
+                        Key::Layer=>{
+                            ninja_kb.layer=1;
+                            event=false;
+                            continue;
+                        },
+                        Key::Code(code)=>{
+                            //info!("code {:08b}",code as u8);
+                            let mut k=REPORT_BUFF_MAX;
+                            let mut duplicate=false;
+                            for i in 0..REPORT_BUFF_MAX{
+                                if k==REPORT_BUFF_MAX && ninja_kb.report_buff[i]==Keyboard::NoEventIndicated {
+                                    k=i;
+                                }
+                                if ninja_kb.report_buff[i]==code{
+                                    duplicate=true;
+                                    break;
+                                }
+                                /*if ninja_kb.report_buff[i]==Keyboard::NoEventIndicated{
+                                    event=true;
+                                    ninja_kb.report_buff[i]=code;
+                                    break;
+                                }*/
                             }
-                            //released
-                            if !mat[m][row][col] && mat_last[m][row][col]{
-                                match side[m][row][col]{
-                                    Key::Layer=>{
-                                        layer=1;
-                                        event=false;
-                                        continue;
-                                    },
-                                    Key::Modifier(k)=>{
-                                        modifier&=!k;
-                                        event=true;
-                                        //info!("r modifier {:08b}",modifier)
-                                    },
-                                    Key::Code(code)=>{
-                                        for i in 0..report_buff_max{
-                                            if report_lim6[i]==code{
-                                                event=true;
-                                                report_lim6[i]=0;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    _ =>()
+                            if !duplicate && k< REPORT_BUFF_MAX {
+                                event=true;
+                                ninja_kb.report_buff[k]=code;
+                            }
+                        }
+                        _ =>()
+                    }                        
+                }
+                //released
+                if !mat[m][row][col] && mat_last[m][row][col]{
+                    ninja_kb.led.set_high();
+                    match side[m][row][col]{
+                        Key::Layer=>{
+                            ninja_kb.layer=1;
+                            event=false;
+                            continue;
+                        },
+                        Key::Code(code)=>{
+                            for i in 0..REPORT_BUFF_MAX{
+                                if ninja_kb.report_buff[i]==code{
+                                    event=true;
+                                    ninja_kb.report_buff[i]=Keyboard::NoEventIndicated;
+                                    break;
                                 }
                             }
                         }
+                        _ =>()
                     }
                 }
             }
-            if SUSPENDED.load(Ordering::Acquire) {
-                info!("Triggering remote wakeup");
-                remote_wakeup.signal(());
-            }else{
-                if event {
-                    //led.set_low();
-                    let report = KeyboardReport {
-                        keycodes: report_lim6,
-                        leds: 0,
-                        modifier,
-                        reserved: 0,
-                    };
-                    match writer.write_serialize(&report).await {
-                        Ok(()) => {}
-                        Err(e) => warn!("Failed to send report: {:?}", e),
-                    };
-                }
-            }
-            Timer::after(Duration::from_millis(1)).await;
-        }
-    };
-
-    let out_fut = async {
-        reader.run(false, &request_handler).await;
-    };
-    
-    join(usb_fut, join(in_fut, out_fut)).await;
-    
-}
-
-struct MyRequestHandler {}
-
-impl RequestHandler for MyRequestHandler {
-    fn get_report(&self, id: ReportId, _buf: &mut [u8]) -> Option<usize> {
-        info!("Get report for {:?}", id);
-        None
-    }
-
-    fn set_report(&self, id: ReportId, data: &[u8]) -> OutResponse {
-        info!("Set report for {:?}: {=[u8]}", id, data);
-        OutResponse::Accepted
-    }
-
-    fn set_idle_ms(&self, id: Option<ReportId>, dur: u32) {
-        info!("Set idle rate for {:?} to {:?}", id, dur);
-    }
-
-    fn get_idle_ms(&self, id: Option<ReportId>) -> Option<u32> {
-        info!("Get idle rate for {:?}", id);
-        None
-    }
-}
-
-struct MyDeviceStateHandler {
-    configured: AtomicBool,
-}
-
-impl MyDeviceStateHandler {
-    fn new() -> Self {
-        MyDeviceStateHandler {
-            configured: AtomicBool::new(false),
         }
     }
-}
-
-impl DeviceStateHandler for MyDeviceStateHandler {
-    fn enabled(&self, enabled: bool) {
-        self.configured.store(false, Ordering::Relaxed);
-        SUSPENDED.store(false, Ordering::Release);
-        if enabled {
-            info!("Device enabled");
-        } else {
-            info!("Device disabled");
-        }
-    }
-
-    fn reset(&self) {
-        self.configured.store(false, Ordering::Relaxed);
-        info!("Bus reset, the Vbus current limit is 100mA");
-    }
-
-    fn addressed(&self, addr: u8) {
-        self.configured.store(false, Ordering::Relaxed);
-        info!("USB address set to: {}", addr);
-    }
-
-    fn configured(&self, configured: bool) {
-        self.configured.store(configured, Ordering::Relaxed);
-        if configured {
-            info!("Device configured, it may now draw up to the configured current limit from Vbus.")
-        } else {
-            info!("Device is no longer configured, the Vbus current limit is 100mA.");
-        }
-    }
-
-    fn suspended(&self, suspended: bool) {
-        if suspended {
-            info!("Device suspended, the Vbus current limit is 500µA (or 2.5mA for high-power devices with remote wakeup enabled).");
-            SUSPENDED.store(true, Ordering::Release);
-        } else {
-            SUSPENDED.store(false, Ordering::Release);
-            if self.configured.load(Ordering::Relaxed) {
-                info!("Device resumed, it may now draw up to the configured current limit from Vbus");
-            } else {
-                info!("Device resumed, the Vbus current limit is 100mA");
-            }
-        }
-    }
-}
-
-struct MyControl{}
-impl ControlHandler for MyControl{
-    fn control_out(&mut self, req: Request, data: &[u8]) -> OutResponse {
-        let _ = (req, data);
-        OutResponse::Rejected
-    }
+    event
 }
