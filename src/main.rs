@@ -36,9 +36,10 @@ const REPORT_BUFF_MAX:usize=42;
 const COLS:usize=6;
 const ROWS:usize=4;
 const LAYERS:usize=2;
+const SIDES:usize=2;
 const SECONDARY_KB_ADDRESS: u8 = 0x08;
 const SECONDARY_KB_N_BYTES:usize = 3;
-
+const CONF_SIZE:usize=COLS*ROWS*LAYERS*SIDES*2;
 //type UsbBusT<'a> = UsbBusAllocator<UsbBus<Peripheral>>;
 type UsbDev<'a>  = UsbDevice<'a, UsbBus<Peripheral>>;
 
@@ -64,6 +65,7 @@ enum Key{
     NoKey,
 }
 type Side = [[Key; COLS]; ROWS];
+
 struct Keys{
     left:[Side;LAYERS],
     right:[Side;LAYERS]
@@ -171,7 +173,7 @@ mod app {
         //let mut matrix_debounce:[[u64; COLS]; ROWS]= [ [0; COLS]; ROWS];
     
         
-        let keys=Keys{
+        let mut keys=Keys{
             left:[
                 [
                     [Key::Code(Keyboard::Escape),Key::Code(Keyboard::Q),Key::Code(Keyboard::W),Key::Code(Keyboard::E),Key::Code(Keyboard::R),Key::Code(Keyboard::T)],
@@ -204,26 +206,108 @@ mod app {
         let report_buff:ReportBuff = [Keyboard::NoEventIndicated;REPORT_BUFF_MAX];
         
         
-        //let k_size=core::mem::size_of::<[Side; LAYERS]>()*2;
-        //info!("size {}",k_size);
-        /*
-            let flash_writer=flash.writer(stm32f1xx_hal::flash::SectorSize::Sz1K, stm32f1xx_hal::flash::FlashSize::Sz64K);
-            let offset=1024*63;
-            let mark=flash_writer.read(offset, 100);
-            match mark{
-                Ok(m)=>{
-                    info!("flash mark{}",m);
-                    //if m[0]==255{ //no flash data
-                        //flash_writer.write(offset, data)
-                    //}
-                },
-                _=>info!("error reading mark from flash")
+        
+        info!("size {}",CONF_SIZE);
+        
+        /*let mut flash_writer=flash.writer(stm32f1xx_hal::flash::SectorSize::Sz1K, stm32f1xx_hal::flash::FlashSize::Sz64K);
+        let offset=1024*63;
+        let mark=flash_writer.read(offset, CONF_SIZE);
+        match mark{
+            Ok(read_bytes)=>{
+                info!("conf in flash {}",read_bytes);
+                if read_bytes[0]==255{ //no flash data
+                    let mut bytes:[u8;CONF_SIZE]=[255;CONF_SIZE];
+                    let mut i:usize=0;
+                    info!("writing.");
+                    for l in 0..LAYERS{
+                        for col in 0..COLS  {
+                            for row in 0..ROWS{
+                                let k=serialize_key(&keys.left[l][row][col]);
+                                bytes[i  ]=k.0;
+                                bytes[i+1]=k.1;
+                                i+=2;
+                            }
+                        }
+                    }
+                    for l in 0..LAYERS{
+                        for col in 0..COLS  {
+                            for row in 0..ROWS{
+                                let k=serialize_key(&keys.right[l][row][col]);
+                                bytes[i  ]=k.0;
+                                bytes[i+1]=k.1;
+                                i+=2;
+                            }
+                        }
+                    }
+                    info!("bytes{} {}",bytes,i);
+                    match flash_writer.write(offset, &bytes){
+                        Ok(_)=>info!("conf written."),
+                        Err(_e)=>info!("error writing conf"),
+                    }
+                }else{//read flash to conf
+                    let mut i=0;
+                    info!("reading.");
+                    for l in 0..LAYERS{
+                        for col in 0..COLS  {
+                            for row in 0..ROWS{
+                                keys.left[l][row][col]=deserialize_key(read_bytes[i],read_bytes[i+1]);
+                                i+=2;
+                            }
+                        }
+                    }
+                    for l in 0..LAYERS{
+                        for col in 0..COLS  {
+                            for row in 0..ROWS{
+                                keys.right[l][row][col]=deserialize_key(read_bytes[i],read_bytes[i+1]);
+                                i+=2;
+                            }
+                        }
+                    }
+                    info!("conf read.");
+                }
+            },
+            _=>info!("error reading mark from flash")
+        }*/
+        
+        
+        //i2c
+        //let i2c=None;
+        led.set_low();                
+        for _i in 0..30 {
+            cortex_m::asm::delay(clocks.sysclk().raw() / 100);
+            led.toggle();
+        }
+        led.set_high();                
+        info!("Conf i2c.");
+        let sda = gpiob.pb11.into_alternate_open_drain(&mut gpiob.crh);
+        let scl = gpiob.pb10.into_alternate_open_drain(&mut gpiob.crh);
+    
+        let mut i2c = BlockingI2c::i2c2(
+            cx.device.I2C2,
+            (scl, sda),
+            Mode::Fast {
+                frequency: 400.kHz(),
+                duty_cycle: DutyCycle::Ratio16to9,
+            },
+            clocks,
+            1000,
+            10,
+            1000,
+            1000,
+        );
+        let bytes :[u8;1]=[0;1];
+        let mut buffer:[u8;SECONDARY_KB_N_BYTES]=[0;SECONDARY_KB_N_BYTES];
+        match i2c.write_read(SECONDARY_KB_ADDRESS, &bytes, &mut buffer){
+            Ok(_) =>{
+                led.set_low();
+            },
+            Err(_) =>{
+                info!("i2c read/write error")
             }
-        */
-        
-        
-        
-        
+        }
+        info!("Conf i2c done.");
+
+
         info!("Conf tick timer.");
         let mut timer = cx.device.TIM2.counter_us(&clocks);
         match timer.start(1.millis()){
@@ -232,33 +316,13 @@ mod app {
         }
         info!("Conf tick timer done.");
 
-        //i2c
-        //let i2c=None;
-        info!("Conf i2c.");
-        let sda = gpiob.pb11.into_alternate_open_drain(&mut gpiob.crh);
-        let scl = gpiob.pb10.into_alternate_open_drain(&mut gpiob.crh);
-    
-        let i2c = BlockingI2c::i2c2(
-            cx.device.I2C2,
-            (scl, sda),
-            Mode::Fast {
-                frequency: 400.kHz(),
-                duty_cycle: DutyCycle::Ratio16to9,
-            },
-            clocks,
-            100,
-            10,
-            100,
-            100,
-        );
-        info!("Conf i2c done.");
         //USB
         info!("Start Usb");
         let mut usb_dp = gpioa.pa12.into_push_pull_output(&mut gpioa.crh);
         usb_dp.set_low();
-        for _i in 0..100 {
+        //for _i in 0..100 {
             cortex_m::asm::delay(clocks.sysclk().raw() / 100);
-        }
+        //}
 
         let usb = Peripheral {
             usb: cx.device.USB,
@@ -295,20 +359,16 @@ mod app {
                     .add_interface(mouse)
                     .add_interface(consumer)
                     .add_interface(config)
-                    .build(usb_bus /*unsafe { USB_BUS.as_ref().unwrap() }*/);
+                    .build(usb_bus);
                 
-        let usb_dev:UsbDev = UsbDeviceBuilder::new(usb_bus /*unsafe { USB_BUS.as_ref().unwrap() }*/, UsbVidPid(0xcaca, 0x0001))
+        let usb_dev:UsbDev = UsbDeviceBuilder::new(usb_bus, UsbVidPid(0xcaca, 0x0001))
         .manufacturer("Nicguzzo")
         .product("Ninja Keyboard Corne")
         .serial_number("0")
         .build();
 
-        //unsafe {
-        //        NVIC::unmask(Interrupt::USB_HP_CAN_TX);
-        //        NVIC::unmask(Interrupt::USB_LP_CAN_RX0);
-        //}
         info!("Usb done.");
-        //reset_all::spawn().ok();
+        led.set_high();
         let ninja_kb= NinjaKb{
             rows,
             cols,
@@ -341,7 +401,7 @@ mod app {
             usb_poll(usb_dev, hid_kb);
         });
     }
-    #[task(binds = TIM2, priority = 1, shared = [hid_kb], local=[timer, ninja_kb,i2c])]
+    #[task(binds = TIM2, priority = 3, shared = [hid_kb], local=[timer, ninja_kb,i2c])]
     fn tick(cx: tick::Context) {
         let mut hid_kb = cx.shared.hid_kb;
         //cx.local.ninja_kb.led.set_low();
@@ -414,7 +474,7 @@ fn ninja(ninja_kb:&mut NinjaKb,i2c:&mut I2cT)-> bool{
     let mut buffer:[u8;SECONDARY_KB_N_BYTES]=[0;SECONDARY_KB_N_BYTES];
     match i2c.write_read(SECONDARY_KB_ADDRESS, &bytes, &mut buffer){
         Ok(_) =>{
-            ninja_kb.led.set_low();
+            //ninja_kb.led.set_low();
             let mut b;
             let mut k:usize=0;
             let mut bit:u8=7;
@@ -443,7 +503,7 @@ fn ninja(ninja_kb:&mut NinjaKb,i2c:&mut I2cT)-> bool{
     let mat:[&Matrix;2] =[&ninja_kb.matrix,&ninja_kb.sec_matrix];
     let mat_last:[&Matrix;2] =[&ninja_kb.matrix_last,&ninja_kb.sec_matrix_last];
     let side:[&Side;2]=[&ninja_kb.keys.left[ninja_kb.layer],&ninja_kb.keys.right[ninja_kb.layer]];
-    for m in 0..2{
+    for m in 0..LAYERS{
         for col in 0..COLS  {
             for row in 0..ROWS{
                 //pressed        
@@ -507,3 +567,44 @@ fn ninja(ninja_kb:&mut NinjaKb,i2c:&mut I2cT)-> bool{
     }
     event
 }
+
+//enum Key{
+//    Code(Keyboard),
+//    Layer,
+//    NoKey,
+//}
+fn serialize_key(key:&Key)->(u8,u8){
+    match key{
+        Key::Code(code)=>(0,*code as u8),
+        Key::Layer=>(1,0),
+        Key::NoKey=>(2,0)
+    }
+}
+fn deserialize_key(b1:u8,b2:u8)->Key{
+    match b1{
+        0=> Key::Code(Keyboard::from(b2)),
+        1=> Key::Layer,
+        2=>Key::NoKey,
+        _=>Key::NoKey
+    }
+}
+/*fn serialize_keys(all_keys:&Keys)->[u8;CONF_SIZE]{
+    let mut out:[u8;CONF_SIZE]=[0;CONF_SIZE];
+    let mut i=0;
+    let sides=[&all_keys.left,&all_keys.right];
+    for side in sides {
+        for layer in side{
+            for keys in layer{
+                for key in keys{
+                    let k=serialize_key(key);
+                    if i < CONF_SIZE{
+                        out[i]=k.0;
+                        out[i+1]=k.1;
+                        i+=2;
+                    }
+                }
+            }
+        }
+    }
+    out
+}*/
