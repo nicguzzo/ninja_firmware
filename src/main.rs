@@ -224,6 +224,7 @@ mod app {
         
         info!("size {}",CONF_SIZE);
         
+        //flash as eeprom
         /*let mut flash_writer=flash.writer(stm32f1xx_hal::flash::SectorSize::Sz1K, stm32f1xx_hal::flash::FlashSize::Sz64K);
         let offset=1024*63;
         let mark=flash_writer.read(offset, CONF_SIZE);
@@ -312,28 +313,9 @@ mod app {
         );
 
         let i2c_bus: &'static _ =shared_bus::new_atomic_check!(I2cT = i2c).unwrap();
-        //let i2c_bus: &'static _ = shared_bus::new_std!(SomeI2cBus = i2c).unwrap();
-
-        //let i2c_bus = shared_bus::BusManagerSimple::new(i2c);
-        
-        //let mut my_device = MyDevice::new(bus.acquire_i2c());
         //read config from eeprom
         info!("read form eeprom");
-        /*let address_read:u8 = 0b101_0001;
-        let address_write = 0b101_0000;
-        //let mut conf_bytes:[u8;CONF_SIZE]=[255;CONF_SIZE];
-        let mut conf_bytes:[u8;1]=[255;1];
-        let mut addr_bytes :[u8;3]=[0,0,37];
-        
-        match i2c.write(address_write, &addr_bytes){
-            Ok(_) =>{                
-                info!("control sent");
-            },
-            Err(_) =>{
-                info!("i2c read/write error")
-            }
-        }
-        info!("read form eeprom done.");*/
+
         let address = SlaveAddr::default();
         let mut eeprom = Eeprom24x::new_24x32(i2c_bus.acquire_i2c(), address);
         
@@ -351,48 +333,14 @@ mod app {
         let read_data = eeprom.read_byte(memory_address).unwrap();
         info!("read_data {}", read_data);
         
-        /*let mut control_bytes:[u8;3]=[address_read,0,0];
-        let mut read_data:[u8;1] = [0; 1];
-        match i2c.write_read(address_read, &control_bytes, &mut read_data){
-            Ok(_) =>{
-                led.set_low();
-                info!("read_data {}", read_data);
-            },
-            Err(ee) =>{
-                match ee{
-                    nb::Error::Other(eee)=> {
-                        match eee{
-                            stm32f1xx_hal::i2c::Error::Bus        => info!("i2c Error::Bus"),
-                            stm32f1xx_hal::i2c::Error::Acknowledge=> info!("i2c Error::Acknowledge"),
-                            stm32f1xx_hal::i2c::Error::Arbitration=> info!("i2c Error::Arbitration"),
-                            stm32f1xx_hal::i2c::Error::Overrun    => info!("i2c Error::Overrun"),
-                            _=>info!("i2c err _ ")
-                        }
-                    },
-                    nb::Error::WouldBlock => info!("i2c WouldBlock"),
-                }
-                //info!("i2c read/write error {}",e)
-            }
-        }*/
+
 
         
         let right_side=RightSideI2C::new(i2c_bus.acquire_i2c());
 
         let i2c_devices=I2cDevices{right_side,eeprom};
 
-        //read left side
-        
-        /*let bytes :[u8;1]=[0;1];
-        let mut buffer:[u8;SECONDARY_KB_N_BYTES]=[0;SECONDARY_KB_N_BYTES];
-        match i2c.write_read(SECONDARY_KB_ADDRESS, &bytes, &mut buffer){
-            Ok(_) =>{
-                led.set_low();
-            },
-            Err(_) =>{
-                info!("i2c read/write error")
-            }
-        }
-        info!("Conf i2c done.");*/
+        info!("Conf i2c done.");
 
 
         info!("Conf tick timer.");
