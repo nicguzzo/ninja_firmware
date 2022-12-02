@@ -4,7 +4,7 @@
 use defmt_rtt as _; 
 // global logger
 use panic_probe as _;
-
+//use defmt::Format;
 
 
 #[defmt::panic_handler]
@@ -27,18 +27,21 @@ use usbd_human_interface_device::device::mouse::{WheelMouseReport, WheelMouseInt
 use usbd_human_interface_device::page::{Keyboard,Consumer};
 use usbd_human_interface_device::device::keyboard::{KeyboardLedsReport, NKROBootKeyboardInterface};
 use usbd_human_interface_device::prelude::*;
+use eeprom24x::{Eeprom24x, SlaveAddr};
 use defmt::{info};
 //use cortex_m::asm::delay;
 mod config_class;
+mod right_side;
 use config_class::RawConfInterface;
+use right_side::RightSideI2C;
 
 const REPORT_BUFF_MAX:usize=42;
 const COLS:usize=6;
 const ROWS:usize=4;
 const LAYERS:usize=2;
 const SIDES:usize=2;
-const SECONDARY_KB_ADDRESS: u8 = 0x08;
-const SECONDARY_KB_N_BYTES:usize = 3;
+//const SECONDARY_KB_ADDRESS: u8 = 0x08;
+//const SECONDARY_KB_N_BYTES:usize = 3;
 const CONF_SIZE:usize=COLS*ROWS*LAYERS*SIDES*2;
 //type UsbBusT<'a> = UsbBusAllocator<UsbBus<Peripheral>>;
 type UsbDev<'a>  = UsbDevice<'a, UsbBus<Peripheral>>;
@@ -52,7 +55,10 @@ UsbHidClass<
         HCons<NKROBootKeyboardInterface<'a,UsbBus<Peripheral>>, HNil>>>>>;
 
 
-type I2cT=stm32f1xx_hal::i2c::blocking::BlockingI2c::<I2C2, (PB10<Alternate<OpenDrain>>, PB11<Alternate<OpenDrain>>)>;
+type I2cT=BlockingI2c::<I2C2, (PB10<Alternate<OpenDrain>>, PB11<Alternate<OpenDrain>>)>;
+
+type I2cProxy = shared_bus::I2cProxy<'static, shared_bus::AtomicCheckMutex<I2cT>>;
+
 type Matrix= [[bool; COLS]; ROWS];
 
 type Rows = [ErasedPin<Input<PullUp>>; ROWS];
@@ -84,27 +90,36 @@ pub struct NinjaKb{
     led:ErasedPin<Output<PushPull>>
 }
 
+pub struct I2cDevices {
+    pub right_side: RightSideI2C<I2cProxy>,
+    pub eeprom:Eeprom24x<I2cProxy,eeprom24x::page_size::B32,eeprom24x::addr_size::TwoBytes>
+    
+}
+
 #[rtic::app(device = stm32f1xx_hal::pac)]
 mod app {
-    use crate::*;
+    
+
+    use shared_bus::{I2cProxy, NullMutex};
+
+    use crate::{*};
     #[shared]
     struct Shared {        
         usb_dev: UsbDev<'static>,
         hid_kb: UsbKb<'static>,
-        //ninja_kb:NinjaKb
+        ninja_kb:NinjaKb,
+        i2c_devices:I2cDevices
     }
 
     #[local]
     struct Local {
-        //usb_bus: UsbBusT<'static>,
         timer:CounterUs<pac::TIM2>,
-        ninja_kb:NinjaKb,
-        i2c:I2cT
     }
 
     #[init]
     fn init(cx: init::Context) -> (Shared, Local, init::Monotonics){    
         static mut USB_BUS:Option<UsbBusAllocator<UsbBus<Peripheral>>>=None;
+        //static mut I2C_BUS:Option<I2cProxy<'static, NullMutex<I2cT>>>=None;
         
         let mut flash = cx.device.FLASH.constrain();
         let rcc = cx.device.RCC.constrain();
@@ -281,7 +296,7 @@ mod app {
         info!("Conf i2c.");
         let sda = gpiob.pb11.into_alternate_open_drain(&mut gpiob.crh);
         let scl = gpiob.pb10.into_alternate_open_drain(&mut gpiob.crh);
-    
+            
         let mut i2c = BlockingI2c::i2c2(
             cx.device.I2C2,
             (scl, sda),
@@ -295,7 +310,79 @@ mod app {
             1000,
             1000,
         );
-        let bytes :[u8;1]=[0;1];
+
+        let i2c_bus: &'static _ =shared_bus::new_atomic_check!(I2cT = i2c).unwrap();
+        //let i2c_bus: &'static _ = shared_bus::new_std!(SomeI2cBus = i2c).unwrap();
+
+        //let i2c_bus = shared_bus::BusManagerSimple::new(i2c);
+        
+        //let mut my_device = MyDevice::new(bus.acquire_i2c());
+        //read config from eeprom
+        info!("read form eeprom");
+        /*let address_read:u8 = 0b101_0001;
+        let address_write = 0b101_0000;
+        //let mut conf_bytes:[u8;CONF_SIZE]=[255;CONF_SIZE];
+        let mut conf_bytes:[u8;1]=[255;1];
+        let mut addr_bytes :[u8;3]=[0,0,37];
+        
+        match i2c.write(address_write, &addr_bytes){
+            Ok(_) =>{                
+                info!("control sent");
+            },
+            Err(_) =>{
+                info!("i2c read/write error")
+            }
+        }
+        info!("read form eeprom done.");*/
+        let address = SlaveAddr::default();
+        let mut eeprom = Eeprom24x::new_24x32(i2c_bus.acquire_i2c(), address);
+        
+        let memory_address = 0;
+        let data = 0xAB;
+
+        //eeprom.write_byte(memory_address, data).unwrap();
+
+        //Delay.delay_ms(5u16);
+        //cortex_m::asm::delay(clocks.sysclk().raw() / 100);
+        //cortex_m::asm::delay(clocks.sysclk().raw() / 100);
+        //cortex_m::asm::delay(clocks.sysclk().raw() / 100);
+        //cortex_m::asm::delay(clocks.sysclk().raw() / 100);
+
+        let read_data = eeprom.read_byte(memory_address).unwrap();
+        info!("read_data {}", read_data);
+        
+        /*let mut control_bytes:[u8;3]=[address_read,0,0];
+        let mut read_data:[u8;1] = [0; 1];
+        match i2c.write_read(address_read, &control_bytes, &mut read_data){
+            Ok(_) =>{
+                led.set_low();
+                info!("read_data {}", read_data);
+            },
+            Err(ee) =>{
+                match ee{
+                    nb::Error::Other(eee)=> {
+                        match eee{
+                            stm32f1xx_hal::i2c::Error::Bus        => info!("i2c Error::Bus"),
+                            stm32f1xx_hal::i2c::Error::Acknowledge=> info!("i2c Error::Acknowledge"),
+                            stm32f1xx_hal::i2c::Error::Arbitration=> info!("i2c Error::Arbitration"),
+                            stm32f1xx_hal::i2c::Error::Overrun    => info!("i2c Error::Overrun"),
+                            _=>info!("i2c err _ ")
+                        }
+                    },
+                    nb::Error::WouldBlock => info!("i2c WouldBlock"),
+                }
+                //info!("i2c read/write error {}",e)
+            }
+        }*/
+
+        
+        let right_side=RightSideI2C::new(i2c_bus.acquire_i2c());
+
+        let i2c_devices=I2cDevices{right_side,eeprom};
+
+        //read left side
+        
+        /*let bytes :[u8;1]=[0;1];
         let mut buffer:[u8;SECONDARY_KB_N_BYTES]=[0;SECONDARY_KB_N_BYTES];
         match i2c.write_read(SECONDARY_KB_ADDRESS, &bytes, &mut buffer){
             Ok(_) =>{
@@ -305,7 +392,7 @@ mod app {
                 info!("i2c read/write error")
             }
         }
-        info!("Conf i2c done.");
+        info!("Conf i2c done.");*/
 
 
         info!("Conf tick timer.");
@@ -343,8 +430,6 @@ mod app {
         
         //control.inner_config.description=Some("Ninja Keyboard Corne Control");
         
-
-        
         let usb_bus= match unsafe { USB_BUS.as_ref() } {
             Some(usb_bus)=> {
                 usb_bus
@@ -381,36 +466,42 @@ mod app {
             layer,
             led
         };
-        (Shared {  usb_dev, hid_kb }, Local {timer,ninja_kb,i2c}, init::Monotonics())
+                
+        
+        (Shared {  usb_dev, hid_kb,i2c_devices, ninja_kb }, Local {timer }, init::Monotonics())
     }
 
-    #[task(binds = USB_HP_CAN_TX, priority = 2, shared = [usb_dev, hid_kb])]
+    #[task(binds = USB_HP_CAN_TX, priority = 2, shared = [usb_dev, hid_kb, ninja_kb])]
     fn usb_tx(cx: usb_tx::Context) {
         let mut usb_dev = cx.shared.usb_dev;
         let mut hid_kb = cx.shared.hid_kb;
-        (&mut usb_dev, &mut hid_kb).lock(|usb_dev, hid_kb| {
+        let mut ninja_kb = cx.shared.ninja_kb;
+        (&mut usb_dev, &mut hid_kb,&mut ninja_kb).lock(|usb_dev, hid_kb,ninja_kb| {
             usb_poll(usb_dev, hid_kb);
         });
     }
 
-    #[task(binds = USB_LP_CAN_RX0, priority = 2, shared = [usb_dev, hid_kb])]
+    #[task(binds = USB_LP_CAN_RX0, priority = 2, shared = [usb_dev, hid_kb, ninja_kb])]
     fn usb_rx(cx: usb_rx::Context) {
         let mut usb_dev = cx.shared.usb_dev;
         let mut hid_kb = cx.shared.hid_kb;
-        (&mut usb_dev, &mut hid_kb).lock(|usb_dev, hid_kb| {
+        let mut ninja_kb = cx.shared.ninja_kb;
+        (&mut usb_dev, &mut hid_kb,&mut ninja_kb).lock(|usb_dev, hid_kb,ninja_kb| {
             usb_poll(usb_dev, hid_kb);
         });
     }
-    #[task(binds = TIM2, priority = 3, shared = [hid_kb], local=[timer, ninja_kb,i2c])]
+    #[task(binds = TIM2, priority = 3, shared = [hid_kb,i2c_devices, ninja_kb], local=[timer])]
     fn tick(cx: tick::Context) {
         let mut hid_kb = cx.shared.hid_kb;
+        let mut ninja_kb = cx.shared.ninja_kb;
+        let mut i2c_devices=cx.shared.i2c_devices;
         //cx.local.ninja_kb.led.set_low();
-        (&mut hid_kb).lock(|hid_kb| {
+        (&mut hid_kb,&mut ninja_kb,&mut i2c_devices).lock(|hid_kb,ninja_kb,i2c_devices| {
             let keyboard = hid_kb.interface::<NKROBootKeyboardInterface<'_, _>, _>();
             //let control = hid_kb.interface::<ConsumerControlInterface<'_, _>, _>();
-            if ninja(cx.local.ninja_kb,cx.local.i2c)
+            if ninja(ninja_kb,&mut i2c_devices.right_side)
             {
-                match keyboard.write_report(cx.local.ninja_kb.report_buff) {
+                match keyboard.write_report(ninja_kb.report_buff) {
                     Err(UsbHidError::WouldBlock) => {info!("WouldBlock")}
                     Err(UsbHidError::Duplicate) => {info!("Duplicate")}
                     Ok(_) => {}
@@ -459,7 +550,7 @@ fn usb_poll(usb_dev: &mut UsbDev, keyboard: &mut UsbKb) {
 }
 
 
-fn ninja(ninja_kb:&mut NinjaKb,i2c:&mut I2cT)-> bool{
+fn ninja(ninja_kb:&mut NinjaKb ,right_side:&mut RightSideI2C<I2cProxy>)-> bool{
     let mut event=false;
     for col in 0..COLS  {
         ninja_kb.cols[col].set_low();
@@ -470,10 +561,11 @@ fn ninja(ninja_kb:&mut NinjaKb,i2c:&mut I2cT)-> bool{
         ninja_kb.cols[col].set_high();
     }
     
-    let bytes :[u8;1]=[0;1];
-    let mut buffer:[u8;SECONDARY_KB_N_BYTES]=[0;SECONDARY_KB_N_BYTES];
-    match i2c.write_read(SECONDARY_KB_ADDRESS, &bytes, &mut buffer){
-        Ok(_) =>{
+    //let bytes :[u8;1]=[0;1];
+    //let mut buffer:[u8;SECONDARY_KB_N_BYTES]=[0;SECONDARY_KB_N_BYTES];
+    //match i2c.write_read(SECONDARY_KB_ADDRESS, &bytes, &mut buffer){
+    match right_side.read_keys(){
+        Ok(buffer) =>{
             //ninja_kb.led.set_low();
             let mut b;
             let mut k:usize=0;
