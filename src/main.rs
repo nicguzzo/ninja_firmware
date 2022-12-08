@@ -94,10 +94,6 @@ impl defmt::Format for Key {
 type Side = [[Key; COLS]; ROWS];
 type Layers=[Side;LAYERS];
 type Keys= [Layers;SIDES];
-/*struct Keys{
-    left:Layers,
-    right:Layers
-}*/
 pub struct NinjaKb{
     rows:Rows,
     cols:Cols,
@@ -106,18 +102,18 @@ pub struct NinjaKb{
     sec_matrix:Matrix,
     sec_matrix_last:Matrix,
     keys:Keys,
-    //factorykeys:Keys,
-    report_buff:ReportBuff,
     layer:usize,
     led:ErasedPin<Output<PushPull>>,
-    send_side_idx:u8,
-    send_layer_idx:u8,
-    count_10ms:u8,
-    send_kb_info:bool,
-    read_from_eeprom_at_start:bool,
-    eeprom_in_use:bool,
-    reset_eeprom:bool,
-    delay_eeprom_cycles:u32
+    report_buff:ReportBuff,    
+    delay_eeprom_cycles:u32,
+}
+pub enum State{
+    Idle,
+    SendKbInfo,
+    ReceiveKeys(u8,u8),
+    RequestKeys(u8,u8),
+    ResetEeprom,
+    SendReport
 }
 
 pub struct I2cDevices {
@@ -134,14 +130,18 @@ mod app {
     #[shared]
     struct Shared {        
         usb_dev: UsbDev<'static>,
-        hid_kb: UsbKb<'static>,
-        ninja_kb:NinjaKb,
-        i2c_devices:I2cDevices
+        hid_kb: UsbKb<'static>,        
+        report_buff:ReportBuff,
+        state:Option<State>,
+        conf_report:config_class::RawConfMsg
     }
 
     #[local]
     struct Local {
         timer:CounterUs<pac::TIM2>,
+        ninja_kb:NinjaKb,
+        i2c_devices:I2cDevices,
+        count_10ms:u8,
     }
 
     #[init]
@@ -300,6 +300,7 @@ mod app {
                 frequency: 400.kHz(),
                 duty_cycle: DutyCycle::Ratio16to9,
             },
+            //Mode::Standard{frequency: 400.kHz()},
             clocks,
             1000,
             10,
@@ -385,76 +386,46 @@ mod app {
             keys,
             report_buff,
             layer,
-            led,
-            send_side_idx:SIDES as u8,
-            send_layer_idx:0,
-            count_10ms:0,
-            send_kb_info:false,
-            read_from_eeprom_at_start:true,
-            eeprom_in_use:false,
-            reset_eeprom:false,
+            led,            
             delay_eeprom_cycles:clocks.sysclk().raw()/50
         };
-                
+        let state=None;
+        let count_10ms=0;
         
-        (Shared {  usb_dev, hid_kb,i2c_devices, ninja_kb }, Local {timer }, init::Monotonics())
+        let conf_report=config_class::RawConfMsg{packet:[0u8;64]};
+        
+        (Shared {  usb_dev, hid_kb,report_buff,state,conf_report }, Local {timer,ninja_kb,i2c_devices,count_10ms}, init::Monotonics())
     }
 
-    #[task(binds = USB_HP_CAN_TX, priority = 2, shared = [usb_dev, hid_kb, ninja_kb])]
+    #[task(binds = USB_HP_CAN_TX, priority = 2, shared = [usb_dev, hid_kb])]
     fn usb_tx(cx: usb_tx::Context) {
         let mut usb_dev = cx.shared.usb_dev;
         let mut hid_kb = cx.shared.hid_kb;
-        let mut ninja_kb = cx.shared.ninja_kb;
-        (&mut usb_dev, &mut hid_kb,&mut ninja_kb).lock(|usb_dev, hid_kb,_ninja_kb| {
+        (&mut usb_dev, &mut hid_kb).lock(|usb_dev, hid_kb| {
             usb_poll(usb_dev, hid_kb);
         });
     }
 
-    #[task(binds = USB_LP_CAN_RX0, priority = 2, shared = [usb_dev, hid_kb, ninja_kb])]
+    #[task(binds = USB_LP_CAN_RX0, priority = 2, shared = [usb_dev, hid_kb])]
     fn usb_rx(cx: usb_rx::Context) {
         let mut usb_dev = cx.shared.usb_dev;
         let mut hid_kb = cx.shared.hid_kb;
-        let mut ninja_kb = cx.shared.ninja_kb;
-        (&mut usb_dev, &mut hid_kb,&mut ninja_kb).lock(|usb_dev, hid_kb,_ninja_kb| {
+        (&mut usb_dev, &mut hid_kb).lock(|usb_dev, hid_kb| {
             usb_poll(usb_dev, hid_kb);
         });
     }
-    #[task(binds = TIM2, priority = 3, shared = [hid_kb,i2c_devices, ninja_kb], local=[timer])]
+    #[task(binds = TIM2, priority = 3, shared = [hid_kb,report_buff,state,conf_report], local=[timer,count_10ms])]
     fn tick(cx: tick::Context) {
         let mut hid_kb = cx.shared.hid_kb;
-        let mut ninja_kb = cx.shared.ninja_kb;
-        let mut i2c_devices=cx.shared.i2c_devices;
-        //info!("tick");
-        //cx.local.ninja_kb.led.set_low();
-        (&mut hid_kb,&mut ninja_kb,&mut i2c_devices).lock(|hid_kb,ninja_kb,i2c_devices| {
+        let mut report_buff = cx.shared.report_buff;
+        let mut state=cx.shared.state;
+        let mut conf_report=cx.shared.conf_report;
+        
+        
+        (&mut hid_kb,&mut report_buff,&mut state,&mut conf_report).lock(|hid_kb,report_buff,state,conf_report| {
             let keyboard = hid_kb.interface::<NKROBootKeyboardInterface<'_, _>, _>();
-            //let control = hid_kb.interface::<ConsumerControlInterface<'_, _>, _>();
-            /*if ninja_kb.read_from_eeprom_at_start {
-                ninja_kb.read_from_eeprom_at_start=false;
-                ninja_kb.eeprom_in_use=true;
-                info!("read conf from eeprom");
-                //cortex_m::interrupt::disable();
-                let memory_address = 0;
-                match i2c_devices.eeprom.read_byte(memory_address){
-                    Ok(_)=>{
-                        info!("eeprom read_byte");
-                        let read_data = i2c_devices.eeprom.read_byte(memory_address).unwrap();        
-                        info!("mark {}", read_data);
-                        if read_data!=EEPROM_MARK{
-                            write_conf_to_eeprom(&mut ninja_kb.keys,&mut i2c_devices.eeprom,ninja_kb.delay_eeprom_cycles);
-                        }else{
-                            info!("reading keys");
-                            //read_conf_from_eeprom(&mut ninja_kb.keys,&mut i2c_devices.eeprom);
-                            info!("keys");
-                            //show(&ninja_kb.keys);
-                        }
-                    },
-                    Err(_)=>info!("eeprom read_byte error")
-                }
-                ninja_kb.eeprom_in_use=false;
-                //unsafe{cortex_m::interrupt::enable();}
-            }*/
-            if ninja_kb.reset_eeprom{
+
+            /*if state.reset_eeprom{
                 ninja_kb.reset_eeprom=false;
                 info!("reset keys");
                 //info!("factorykeys {}",ninja_kb.factorykeys);
@@ -464,24 +435,21 @@ mod app {
                 //reset(&mut ninja_kb.keys,&ninja_kb.factorykeys);
                 //info!("reset conf to eeprom");
                 //write_conf_to_eeprom(&mut ninja_kb.factorykeys,&mut i2c_devices.eeprom,ninja_kb.delay_eeprom_cycles);
-            }
+            }*/
 
-            if ninja_kb.count_10ms > 10 {
-                ninja_kb.count_10ms=0;
+            if *cx.local.count_10ms > 10 {
+                *cx.local.count_10ms=0;
             }else{
-                ninja_kb.count_10ms+=1;
+                *cx.local.count_10ms+=1;
             }
-            if ninja(ninja_kb,&mut i2c_devices.right_side)
-            {
-                match keyboard.write_report(ninja_kb.report_buff) {
-                    Err(UsbHidError::WouldBlock) => {info!("WouldBlock")}
-                    Err(UsbHidError::Duplicate) => {info!("Duplicate")}
-                    Ok(_) => {}
-                    Err(_e) => {
-                        info!("Failed to write keyboard report: ")
-                    }
-                };
-            }
+            match keyboard.write_report(*report_buff) {
+                Err(UsbHidError::WouldBlock) => {info!("WouldBlock")}
+                //Err(UsbHidError::Duplicate) => {info!("Duplicate")}
+                Ok(_) => {}
+                Err(_e) => {
+                    //info!("Failed to write keyboard report: ")
+                }
+            };
             match keyboard.read_report(){
                 Err(UsbError::WouldBlock) => {},                    
                 Ok(_leds) => { 
@@ -496,22 +464,26 @@ mod app {
             match control.read_report(){
                 Err(UsbError::WouldBlock) => {},                    
                 Ok(s) => { 
-                    info!("read conf report {}",s.packet);
+                    //info!("read conf report {}",s.packet);
                     match s.packet[0]{
                         0=>{//conf app requests kb info
-                            ninja_kb.send_kb_info=true;
-                            info!("send_kb_info");
+                            info!("read_report SendKbInfo");
+                            *state=Some(State::SendKbInfo);
+                            //info!("send_kb_info");
                         },
                         1=>{//conf app sends keys conf
-                            deserialize_keys(&s.packet,&mut ninja_kb.keys);
-                            info!("deserialize_keys");
+                            info!("read_report ReceiveKeys");
+                            conf_report.packet=s.packet;
+                            *state=Some(State::ReceiveKeys(s.packet[1],s.packet[2]));
+                            //deserialize_keys(&s.packet,&mut ninja_kb.keys);
+                            //info!("deserialize_keys");
                         },
                         2=>{//conf app requests keys conf
-                            ninja_kb.send_side_idx=0;
-                            ninja_kb.send_layer_idx=0;
+                            info!("read_report RequestKeys");
+                            *state=Some(State::RequestKeys(s.packet[1],s.packet[2]));
                         },
                         3=>{
-                            ninja_kb.reset_eeprom=true;
+                            *state=Some(State::ResetEeprom);
                         },
                         _=>()
                     }
@@ -520,60 +492,45 @@ mod app {
                     info!("Failed to read conf report: ")
                 }
             }
-            if ninja_kb.count_10ms == 10 {                
-                if ninja_kb.send_kb_info{
-                    ninja_kb.send_kb_info=false;
-                    let mut packet=[0u8;64];
-                    packet[0]=0;//kbinfo
-                    packet[1]=SIDES as u8;
-                    packet[2]=LAYERS as u8;
-                    packet[3]=ROWS as u8;
-                    packet[4]=COLS as u8;
-                    let report=config_class::RawConfMsg{packet};
-                    match control.write_report(&report){                
-                        Ok(_) => { 
-                            info!("report write ok")
-                        }
-                        Err(_e) => {
-                            info!("Failed to write_report")
-                        }
-                    }
-                }else{
-                    let  side=ninja_kb.send_side_idx as usize;
-                    let layer=ninja_kb.send_layer_idx as usize;
-                    if side < SIDES {
-                        if layer< LAYERS{
-                            info!("side: {}",side);
-                            info!("layer: {}",layer);
-                            let packet=serialize_keys(ninja_kb.send_side_idx,ninja_kb.send_layer_idx,&ninja_kb.keys[side][layer]);
-                            let report=config_class::RawConfMsg{packet};
-                            match control.write_report(&report){                
-                                Ok(_) => { 
-                                    info!("report write ok")
-                                }
-                                Err(_e) => {
-                                    info!("Failed to write_report")
-                                }
+            if *cx.local.count_10ms == 10 {
+                match state{
+                    Some(State::SendReport)=>{
+                        match control.write_report(conf_report){                
+                            Ok(_) => { 
+                                info!("control report write ok")
                             }
-                            ninja_kb.send_layer_idx+=1;
-                        }else{
-                            ninja_kb.send_layer_idx=0;
-                            ninja_kb.send_side_idx+=1;
+                            Err(_e) => {
+                                info!("Failed to write control report")
+                            }
                         }
-                    }
+                        *state=Some(State::Idle);
+                    },
+                    _=>()
                 }
+                
+               
             }
             
         });
         cx.local.timer.clear_interrupt(Event::Update);
     }
-    #[idle(/*shared=[i2c_devices]*/)]
+    #[idle( local=[i2c_devices,ninja_kb],shared=[report_buff,state,conf_report])]
     fn idle(cx: idle::Context) -> ! {
-        /*info!("idle");
-        let i2c_devices=cx.shared.i2c_devices;
+        info!("idle");
+        let i2c_devices=cx.local.i2c_devices;
+        let ninja_kb=cx.local.ninja_kb;
+        let mut state=cx.shared.state;
+        let mut report_buff=cx.shared.report_buff;
+        let mut conf_report=cx.shared.conf_report;
         
+
+        cortex_m::asm::delay(ninja_kb.delay_eeprom_cycles);
+        info!("read right_side keys");
+        i2c_devices.right_side.read_keys();
+
+
+        cortex_m::asm::delay(ninja_kb.delay_eeprom_cycles);
         info!("read conf from eeprom");
-        //cortex_m::interrupt::disable();
         let memory_address = 0;
         match i2c_devices.eeprom.read_byte(memory_address){
             Ok(_)=>{
@@ -586,14 +543,64 @@ mod app {
                     info!("reading keys");
                     //read_conf_from_eeprom(&mut ninja_kb.keys,&mut i2c_devices.eeprom);
                     info!("keys");
-                    //show(&ninja_kb.keys);
                 }
             },
             Err(_)=>info!("eeprom read_byte error")
-        }*/
+        }
+        //let mut send_side_idx=0u8;
+        //let mut send_layer_idx=0u8;
         loop {
             //cortex_m::asm::nop();
-            cortex_m::asm::wfi();
+            if ninja(ninja_kb,&mut i2c_devices.right_side){
+                (&mut report_buff).lock(|report_buff| {
+                    for i in 0..REPORT_BUFF_MAX {
+                        report_buff[i]=ninja_kb.report_buff[i];
+                    }
+                });
+            }
+            (&mut state,&mut conf_report).lock(|state,conf_report| {
+                if let Some(state)=state{
+                    match state{
+                        State::SendKbInfo=>{
+                            info!("idle SendKbInfo");
+                            conf_report.packet[0]=0;//kbinfo
+                            conf_report.packet[1]=SIDES as u8;
+                            conf_report.packet[2]=LAYERS as u8;
+                            conf_report.packet[3]=ROWS as u8;
+                            conf_report.packet[4]=COLS as u8;
+                            *state=State::SendReport;
+                        },                        
+                        State::ReceiveKeys(side,layer)=>{
+                            info!("idle ReceiveKeys");
+                            deserialize_keys(&conf_report.packet,&mut ninja_kb.keys);
+                            *state=State::Idle;
+
+                        },
+                        State::RequestKeys(side,layer)=>{
+                            info!("idle RequestKeys");
+                            if (*side as usize) < SIDES && (*layer as usize ) < LAYERS{
+                                serialize_keys(*side,*layer,&ninja_kb.keys[*side as usize][*layer as usize],&mut conf_report.packet);
+                                *state=State::SendReport;
+                            }else{
+                                *state=State::Idle;
+                            }
+                        },
+                        State::ResetEeprom=>{
+                            info!("idle ResetEeprom");
+                            *state=State::Idle;
+                        },
+                        State::SendReport=>{
+                            info!("idle SendReport");
+                            //*state=State::Idle;
+                        }
+                        State::Idle=>{
+                            cortex_m::asm::nop();
+                            //cortex_m::asm::wfi();
+                        }
+                    }
+                }
+                //*state=Some(State::Idle);
+            })
         }
     }    
 }
@@ -614,30 +621,29 @@ fn ninja(ninja_kb:&mut NinjaKb ,right_side:&mut RightSideI2C<I2cProxy>)-> bool{
         }
         ninja_kb.cols[col].set_high();
     }
-    if !ninja_kb.eeprom_in_use{
-        match right_side.read_keys(){
-            Ok(buffer) =>{
-                //ninja_kb.led.set_low();
-                let mut b;
-                let mut k:usize=0;
-                let mut bit:u8=7;
-                for col in 0..COLS  {
-                    for row in 0..ROWS{
-                        ninja_kb.sec_matrix_last[row][col]=ninja_kb.sec_matrix[row][col];
-                        b=k/8;
-                        ninja_kb.sec_matrix[row][col]= ((buffer[b]>>bit)&0x01) != 0;
-                        if bit==0{
-                            bit=7;
-                        }else{
-                            bit=bit-1;
-                        }
-                        k+=1;
+    
+    match right_side.read_keys(){
+        Ok(buffer) =>{
+            //ninja_kb.led.set_low();
+            let mut b;
+            let mut k:usize=0;
+            let mut bit:u8=7;
+            for col in 0..COLS  {
+                for row in 0..ROWS{
+                    ninja_kb.sec_matrix_last[row][col]=ninja_kb.sec_matrix[row][col];
+                    b=k/8;
+                    ninja_kb.sec_matrix[row][col]= ((buffer[b]>>bit)&0x01) != 0;
+                    if bit==0{
+                        bit=7;
+                    }else{
+                        bit=bit-1;
                     }
+                    k+=1;
                 }
-            },
-            Err(_) =>{
-                info!("i2c read/write error")
             }
+        },
+        Err(_) =>{
+            info!("i2c read/write error")
         }
     }
     //info!("matrix_l {}", ninja_kb.matrix);
@@ -732,8 +738,8 @@ fn deserialize_key(b1:u8,b2:u8)->Key{
         _=>Key::NoKey
     }
 }
-fn serialize_keys(side:u8,layer:u8,side_data:&Side)->[u8;64]{
-    let mut bytes:[u8;64]=[0;64];
+fn serialize_keys(side:u8,layer:u8,side_data:&Side,bytes:&mut [u8;64]){
+    //let mut bytes:[u8;64]=[0;64];
     let mut i:usize=4;
     bytes[0]=1;//keys
     bytes[1]=0;//reserved
@@ -748,8 +754,7 @@ fn serialize_keys(side:u8,layer:u8,side_data:&Side)->[u8;64]{
             }
             i+=2;
         }
-    }    
-    bytes
+    }
 }
 fn deserialize_keys(bytes:&[u8;64],keys:&mut Keys){
     let side=bytes[2] as usize;
