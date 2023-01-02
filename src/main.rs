@@ -49,6 +49,8 @@ const PAGE_SIZE:usize=32;
 const CONF_PAGES:usize=(CONF_SIZE>>5)+1;
 const CONF_PAGES_SIZE:usize=PAGE_SIZE*CONF_PAGES;
 
+const KB_N_BYTES:usize = ((COLS*ROWS) + 7 & !7)/8;
+
 type UsbDev<'a>  = UsbDevice<'a, UsbBus<Peripheral>>;
 
 type UsbKb<'a> =UsbHidClass<UsbBus<Peripheral>, 
@@ -62,7 +64,9 @@ type I2cT=BlockingI2c::<I2C2, (PB10<Alternate<OpenDrain>>, PB11<Alternate<OpenDr
 
 type I2cProxy = shared_bus::I2cProxy<'static, shared_bus::AtomicCheckMutex<I2cT>>;
 type EepromT=Eeprom24x<I2cProxy,eeprom24x::page_size::B32,eeprom24x::addr_size::TwoBytes>;
-type Matrix= [[bool; COLS]; ROWS];
+
+type Matrix= [u8;KB_N_BYTES];
+type Matrices=[[Matrix;2];SIDES];
 
 type Rows = [ErasedPin<Input<PullUp>>; ROWS];
 type Cols = [ErasedPin<Output<PushPull>>; COLS];
@@ -88,7 +92,6 @@ impl defmt::Format for Key {
                 defmt::write!(f,"Nk")
             }
         }
-        
     }
 }
 type Side = [[Key; COLS]; ROWS];
@@ -97,10 +100,7 @@ type Keys= [Layers;SIDES];
 pub struct NinjaKb{
     rows:Rows,
     cols:Cols,
-    matrix:Matrix,    
-    matrix_last:Matrix,
-    sec_matrix:Matrix,
-    sec_matrix_last:Matrix,
+    matrices:Matrices,
     keys:Keys,
     layer:usize,
     led:ErasedPin<Output<PushPull>>,
@@ -119,13 +119,10 @@ pub enum State{
 pub struct I2cDevices {
     pub right_side: RightSideI2C<I2cProxy>,
     pub eeprom:EepromT
-    
 }
 
 #[rtic::app(device = stm32f1xx_hal::pac)]
 mod app {
-    
-
     use crate::{*};
     #[shared]
     struct Shared {        
@@ -147,7 +144,6 @@ mod app {
     #[init]
     fn init(cx: init::Context) -> (Shared, Local, init::Monotonics){    
         static mut USB_BUS:Option<UsbBusAllocator<UsbBus<Peripheral>>>=None;
-        //static mut I2C_BUS:Option<I2cProxy<'static, NullMutex<I2cT>>>=None;
         
         let mut flash = cx.device.FLASH.constrain();
         let rcc = cx.device.RCC.constrain();
@@ -158,23 +154,7 @@ mod app {
                 .pclk1(48.MHz())
                 .freeze(&mut flash.acr);
 
-        /*let clocks = rcc
-                .cfgr
-                .use_hse(8.MHz())
-                .sysclk(72.MHz())
-                .pclk1(36.MHz())
-                .freeze(&mut flash.acr);*/
-
-        /*let clocks = rcc
-                .cfgr
-                .use_hse(8.MHz())
-                .sysclk(48.MHz())
-                .pclk1(24.MHz())
-                .freeze(&mut flash.acr);*/
-
         assert!(clocks.usbclk_valid());
-
-        //let mut delay = cx.core.SYST.delay(&clocks);
 
         let mut afio = cx.device.AFIO.constrain();
         let mut gpioa = cx.device.GPIOA.split();
@@ -183,8 +163,7 @@ mod app {
         
         //disable jtag pins
         let (_gpioa_pa15, gpiob_pb3, gpiob_pb4) = afio.mapr.disable_jtag(gpioa.pa15, gpiob.pb3, gpiob.pb4);
-        //let mut timer = Timer::syst(cp.SYST, &clocks).counter_us();
-
+        
         let mut led = gpioc.pc13.into_push_pull_output(&mut gpioc.crh).erase();
         led.set_high();
   
@@ -199,22 +178,13 @@ mod app {
         let col3 = gpiob.pb15.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase();
         let col4 =  gpiob_pb3.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase();
         let col5 =  gpiob_pb4.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase();
-
         
         let layer:usize=0;
         let rows:Rows=[row0,row1,row2,row3];
         let cols:Cols=[col0,col1,col2,col3,col4,col5];
 
         //keyboard matrix
-        
-        let matrix:Matrix=[ [false; COLS]; ROWS];    
-        let matrix_last:Matrix= [ [false; COLS]; ROWS];
-    
-        let sec_matrix:Matrix=[ [false; COLS]; ROWS];    
-        let sec_matrix_last:Matrix= [ [false; COLS]; ROWS];
-    
-        //let mut matrix_debounce:[[u64; COLS]; ROWS]= [ [0; COLS]; ROWS];
-    
+        let matrices:Matrices=[[[0u8;KB_N_BYTES];2];SIDES];
         
         let keys:Keys=[
             [
@@ -273,10 +243,6 @@ mod app {
             ]
         ];
 
-        //let mut keys:Keys=[[[[Key::NoKey; COLS];ROWS];LAYERS];SIDES];
-        
-        //let keys=factorykeys;
-        
         let report_buff:ReportBuff = [Keyboard::NoEventIndicated;REPORT_BUFF_MAX];
         
         info!("size {}",CONF_SIZE);
@@ -300,7 +266,6 @@ mod app {
                 frequency: 400.kHz(),
                 duty_cycle: DutyCycle::Ratio16to9,
             },
-            //Mode::Standard{frequency: 400.kHz()},
             clocks,
             1000,
             10,
@@ -379,10 +344,7 @@ mod app {
         let ninja_kb= NinjaKb{
             rows,
             cols,
-            matrix,
-            matrix_last,
-            sec_matrix,
-            sec_matrix_last,
+            matrices,
             keys,
             report_buff,
             layer,
@@ -405,7 +367,6 @@ mod app {
             usb_poll(usb_dev, hid_kb);
         });
     }
-
     #[task(binds = USB_LP_CAN_RX0, priority = 2, shared = [usb_dev, hid_kb])]
     fn usb_rx(cx: usb_rx::Context) {
         let mut usb_dev = cx.shared.usb_dev;
@@ -424,18 +385,6 @@ mod app {
         
         (&mut hid_kb,&mut report_buff,&mut state,&mut conf_report).lock(|hid_kb,report_buff,state,conf_report| {
             let keyboard = hid_kb.interface::<NKROBootKeyboardInterface<'_, _>, _>();
-
-            /*if state.reset_eeprom{
-                ninja_kb.reset_eeprom=false;
-                info!("reset keys");
-                //info!("factorykeys {}",ninja_kb.factorykeys);
-                //show(&ninja_kb.factorykeys);
-                //info!("keys {}",ninja_kb.keys);
-                //show(&ninja_kb.keys);
-                //reset(&mut ninja_kb.keys,&ninja_kb.factorykeys);
-                //info!("reset conf to eeprom");
-                //write_conf_to_eeprom(&mut ninja_kb.factorykeys,&mut i2c_devices.eeprom,ninja_kb.delay_eeprom_cycles);
-            }*/
 
             if *cx.local.count_10ms > 10 {
                 *cx.local.count_10ms=0;
@@ -460,7 +409,6 @@ mod app {
                 }
             }
             let control = hid_kb.interface::<RawConfInterface<'_, _>, _>();
-            //let data = &mut [0;64];
             match control.read_report(){
                 Err(UsbError::WouldBlock) => {},                    
                 Ok(s) => { 
@@ -469,14 +417,11 @@ mod app {
                         0=>{//conf app requests kb info
                             info!("read_report SendKbInfo");
                             *state=Some(State::SendKbInfo);
-                            //info!("send_kb_info");
                         },
                         1=>{//conf app sends keys conf
                             info!("read_report ReceiveKeys");
                             conf_report.packet=s.packet;
                             *state=Some(State::ReceiveKeys(s.packet[1],s.packet[2]));
-                            //deserialize_keys(&s.packet,&mut ninja_kb.keys);
-                            //info!("deserialize_keys");
                         },
                         2=>{//conf app requests keys conf
                             info!("read_report RequestKeys");
@@ -507,8 +452,6 @@ mod app {
                     },
                     _=>()
                 }
-                
-               
             }
             
         });
@@ -522,12 +465,15 @@ mod app {
         let mut state=cx.shared.state;
         let mut report_buff=cx.shared.report_buff;
         let mut conf_report=cx.shared.conf_report;
-        
 
         cortex_m::asm::delay(ninja_kb.delay_eeprom_cycles);
         info!("read right_side keys");
-        i2c_devices.right_side.read_keys();
-
+        match i2c_devices.right_side.read_keys(){
+            Ok(_)=>{
+                info!("right side found");
+            },
+            Err(_)=>info!("eeprom read_byte error")
+        }
 
         cortex_m::asm::delay(ninja_kb.delay_eeprom_cycles);
         info!("read conf from eeprom");
@@ -541,14 +487,13 @@ mod app {
                     write_conf_to_eeprom(&mut ninja_kb.keys,&mut i2c_devices.eeprom,ninja_kb.delay_eeprom_cycles);
                 }else{
                     info!("reading keys");
-                    //read_conf_from_eeprom(&mut ninja_kb.keys,&mut i2c_devices.eeprom);
-                    info!("keys");
+                    read_conf_from_eeprom(&mut ninja_kb.keys,&mut i2c_devices.eeprom);
+                    info!("keys {}",ninja_kb.keys);
                 }
             },
             Err(_)=>info!("eeprom read_byte error")
         }
-        //let mut send_side_idx=0u8;
-        //let mut send_layer_idx=0u8;
+
         loop {
             //cortex_m::asm::nop();
             if ninja(ninja_kb,&mut i2c_devices.right_side){
@@ -587,6 +532,7 @@ mod app {
                         },
                         State::ResetEeprom=>{
                             info!("idle ResetEeprom");
+                            i2c_devices.eeprom.write_byte(memory_address,0).unwrap();
                             *state=State::Idle;
                         },
                         State::SendReport=>{
@@ -599,7 +545,6 @@ mod app {
                         }
                     }
                 }
-                //*state=Some(State::Idle);
             })
         }
     }    
@@ -613,51 +558,42 @@ fn usb_poll(usb_dev: &mut UsbDev, keyboard: &mut UsbKb) {
 
 fn ninja(ninja_kb:&mut NinjaKb ,right_side:&mut RightSideI2C<I2cProxy>)-> bool{
     let mut event=false;
+    for byte in 0..KB_N_BYTES  {
+        ninja_kb.matrices[0][1][byte]=ninja_kb.matrices[0][0][byte];
+        ninja_kb.matrices[1][1][byte]=ninja_kb.matrices[1][0][byte];
+    }
     for col in 0..COLS  {
         ninja_kb.cols[col].set_low();
         for row in 0..ROWS {
-            ninja_kb.matrix_last[row][col]=ninja_kb.matrix[row][col];
-            ninja_kb.matrix[row][col]=ninja_kb.rows[row].is_low();
+            let index=row*COLS+col;
+            let byte=index>>3;
+            let bit=(index%8) as u8;
+            if ninja_kb.rows[row].is_low(){
+                ninja_kb.matrices[0][0][byte]|=1<<bit;
+            }else{
+                ninja_kb.matrices[0][0][byte]&= !(1<<bit);
+            }
         }
         ninja_kb.cols[col].set_high();
     }
-    
     match right_side.read_keys(){
         Ok(buffer) =>{
-            //ninja_kb.led.set_low();
-            let mut b;
-            let mut k:usize=0;
-            let mut bit:u8=7;
-            for col in 0..COLS  {
-                for row in 0..ROWS{
-                    ninja_kb.sec_matrix_last[row][col]=ninja_kb.sec_matrix[row][col];
-                    b=k/8;
-                    ninja_kb.sec_matrix[row][col]= ((buffer[b]>>bit)&0x01) != 0;
-                    if bit==0{
-                        bit=7;
-                    }else{
-                        bit=bit-1;
-                    }
-                    k+=1;
-                }
-            }
+            ninja_kb.matrices[1][0]=buffer;
         },
         Err(_) =>{
             info!("i2c read/write error")
         }
     }
-    //info!("matrix_l {}", ninja_kb.matrix);
-    //info!("matrix_r {}", ninja_kb.sec_matrix);
-    let mat:[&Matrix;2] =[&ninja_kb.matrix,&ninja_kb.sec_matrix];
-    let mat_last:[&Matrix;2] =[&ninja_kb.matrix_last,&ninja_kb.sec_matrix_last];
-    
     for side in 0..SIDES{
         for col in 0..COLS  {
             for row in 0..ROWS{
-                //info!("side{} {}",side, mat[side][row][col]);
+                let index=row*COLS+col;
+                let byte=index>>3;
+                let bit=(index%8) as u8;
                 //pressed        
-                if mat[side][row][col] && !mat_last[side][row][col]{
-                    //info!("pressed {} {}",row,col);
+                let m1=ninja_kb.matrices[side][0][byte] & (1<<bit);
+                let m2=ninja_kb.matrices[side][1][byte] & (1<<bit);
+                if m1!=0 && m2==0{
                     ninja_kb.led.set_low();
                     match ninja_kb.keys[side][ninja_kb.layer][row][col]{
                         Key::Layer=>{
@@ -666,7 +602,6 @@ fn ninja(ninja_kb:&mut NinjaKb ,right_side:&mut RightSideI2C<I2cProxy>)-> bool{
                             continue;
                         },
                         Key::Code(code)=>{
-                            //info!("code {}",code as u8);
                             let mut k=REPORT_BUFF_MAX;
                             let mut duplicate=false;
                             for i in 0..REPORT_BUFF_MAX{
@@ -677,11 +612,6 @@ fn ninja(ninja_kb:&mut NinjaKb ,right_side:&mut RightSideI2C<I2cProxy>)-> bool{
                                     duplicate=true;
                                     break;
                                 }
-                                /*if ninja_kb.report_buff[i]==Keyboard::NoEventIndicated{
-                                    event=true;
-                                    ninja_kb.report_buff[i]=code;
-                                    break;
-                                }*/
                             }
                             if !duplicate && k< REPORT_BUFF_MAX {
                                 event=true;
@@ -692,7 +622,7 @@ fn ninja(ninja_kb:&mut NinjaKb ,right_side:&mut RightSideI2C<I2cProxy>)-> bool{
                     }                        
                 }
                 //released
-                if !mat[side][row][col] && mat_last[side][row][col]{
+                if m1==0 && m2!=0{
                     ninja_kb.led.set_high();
                     match ninja_kb.keys[side][ninja_kb.layer][row][col]{
                         Key::Layer=>{
@@ -718,11 +648,6 @@ fn ninja(ninja_kb:&mut NinjaKb ,right_side:&mut RightSideI2C<I2cProxy>)-> bool{
     event
 }
 
-//enum Key{
-//    Code(Keyboard),
-//    Layer,
-//    NoKey,
-//}
 fn serialize_key(key:&Key)->(u8,u8){
     match key{
         Key::Code(code)=>(0,*code as u8),
@@ -739,7 +664,6 @@ fn deserialize_key(b1:u8,b2:u8)->Key{
     }
 }
 fn serialize_keys(side:u8,layer:u8,side_data:&Side,bytes:&mut [u8;64]){
-    //let mut bytes:[u8;64]=[0;64];
     let mut i:usize=4;
     bytes[0]=1;//keys
     bytes[1]=0;//reserved
@@ -773,9 +697,7 @@ fn deserialize_keys(bytes:&[u8;64],keys:&mut Keys){
     }
 }
 fn write_conf_to_eeprom(keys:&mut Keys,eeprom:&mut EepromT,delay:u32){
-    //let mut bytes:[u8;CONF_SIZE]=[255;CONF_SIZE];
     let mut bytes=[[0u8;PAGE_SIZE];CONF_PAGES];
-    
     let mut i:usize=2;
     let mut p=0;
     bytes[p][0]=EEPROM_MARK;
@@ -796,9 +718,7 @@ fn write_conf_to_eeprom(keys:&mut Keys,eeprom:&mut EepromT,delay:u32){
             }
         }
     }
-    //info!("eeprom pages {}",bytes);
     let memory_address = 0u32;
-    //info!("eeprom pages {}",CONF_PAGES);
     for page in 0..CONF_PAGES{
         match eeprom.write_page(memory_address+((page as u32) << 5), &bytes[page]){
             Ok(_)=>info!("eeprom page {} written",page),
@@ -815,7 +735,6 @@ fn read_conf_from_eeprom(keys:&mut Keys,eeprom:&mut EepromT){
     info!("reading.");
     match eeprom.read_data(memory_address, &mut bytes){
         Ok(_)=>{            
-            //info!("read bytes {}", bytes);
             let mut i:usize=2;
             if bytes[0]==EEPROM_MARK{
                 for side in 0..SIDES{
