@@ -1,5 +1,5 @@
 use usbd_human_interface_device::page::Keyboard as K;
-use crate::{keyboard::{keyboard::{KeyboardTrait, Ninja}, key::Key}, Keys};
+use crate::{keyboard::{keyboard::{KeyboardTrait, Ninja}, key::{Key,LayerCMD}}, Keys};
 
 impl KeyboardTrait for Ninja {
     const COLS:usize=6;
@@ -14,14 +14,14 @@ impl KeyboardTrait for Ninja {
                     [Key::Code(K::Escape),Key::Code(K::Q),Key::Code(K::W),Key::Code(K::E),Key::Code(K::R),Key::Code(K::T)],
                     [Key::Code(K::Tab),Key::Code(K::A),Key::Code(K::S),Key::Code(K::D),Key::Code(K::F),Key::Code(K::G)],
                     [Key::Code(K::LeftShift),Key::Code(K::Z),Key::Code(K::X),Key::Code(K::C),Key::Code(K::V),Key::Code(K::B)],
-                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::Code(K::LeftControl),Key::Code(K::LeftGUI),Key::Layer ],
+                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::Code(K::LeftControl),Key::Code(K::LeftGUI),Key::Layer(LayerCMD::TMP(1)) ],
                     [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
                 ],
                 [
                     [Key::Code(K::F1),Key::Code(K::F2),Key::Code(K::F3),Key::Code(K::F4),Key::Code(K::F5),Key::Code(K::F6) ],
                     [Key::Code(K::Keyboard1),Key::Code(K::Keyboard1),Key::Code(K::Keyboard2),Key::Code(K::Keyboard3),Key::Code(K::Keyboard4),Key::Code(K::Keyboard5)],
                     [Key::Code(K::Backslash),Key::Code(K::Z),Key::Code(K::X) ,Key::Code(K::C), Key::Code(K::V) ,Key::Code(K::B)  ],
-                    [Key::NoKey,Key::NoKey,Key::NoKey ,Key::Code(K::LeftAlt),Key::Code(K::RightGUI),Key::Layer ],
+                    [Key::NoKey,Key::NoKey,Key::NoKey ,Key::Code(K::LeftAlt),Key::Code(K::RightGUI),Key::Layer(LayerCMD::TMP(1)) ],
                     [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
                 ],
                 [

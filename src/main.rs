@@ -3,6 +3,7 @@
 //#![feature(generic_const_exprs)]
 use defmt_rtt as _; 
 
+
 // global logger
 use panic_probe as _;
 //use defmt::Format;
@@ -32,11 +33,11 @@ use usbd_human_interface_device::device::consumer::ConsumerControlInterface;
 use usbd_human_interface_device::page::Keyboard as Kc;
 use usbd_human_interface_device::device::keyboard::NKROBootKeyboardInterface;
 use usbd_human_interface_device::prelude::*;
-
-use eeprom24x::{Eeprom24x, SlaveAddr};
-
 use defmt::{info};
-//use cortex_m::asm::delay;
+
+#[cfg(feature="has_eeprom")]
+mod eeprom;
+
 mod config_class;
 mod secondary_side;
 mod keyboard;
@@ -45,10 +46,10 @@ use crate::keyboard::keyboard::KeyboardTrait;
 use keyboard::keyboard::{Ninja, KB_N_BYTES};
 use config_class::RawConfInterface;
 use secondary_side::SecondarySideI2C;
-use keyboard::key::Key;
+use keyboard::key::{Key};
+use keyboard::conf::*;
 
 const REPORT_BUFF_MAX:usize=42;
-const EEPROM_MARK:u8 = 0xAB;
 
 type UsbDev<'a>  = UsbDevice<'a, UsbBus<Peripheral>>;
 type UsbKb<'a> =UsbHidClass<UsbBus<Peripheral>, 
@@ -61,18 +62,10 @@ type UsbKb<'a> =UsbHidClass<UsbBus<Peripheral>,
 type I2cT=BlockingI2c::<I2C2, (PB10<Alternate<OpenDrain>>, PB11<Alternate<OpenDrain>>)>;
 
 type I2cProxy = shared_bus::I2cProxy<'static, shared_bus::AtomicCheckMutex<I2cT>>;
-type EepromT=Eeprom24x<I2cProxy,eeprom24x::page_size::B32,eeprom24x::addr_size::TwoBytes>;
-
 
 type Rows = [ErasedPin<Input<PullUp>>; Ninja::ROWS];
 type Cols = [ErasedPin<Output<PushPull>>; Ninja::COLS];
 
-
-const CONF_KEY_BYTES:usize=2; //bytes per key in conf report
-const CONF_SIZE:usize=Ninja::COLS*Ninja::ROWS*Ninja::LAYERS*Ninja::SIDES*CONF_KEY_BYTES+2;//2 byte mark size
-const PAGE_SIZE:usize=32;
-const CONF_PAGES:usize=(CONF_SIZE>>5)+1;
-const CONF_PAGES_SIZE:usize=PAGE_SIZE*CONF_PAGES;
 
 type Matrix= [u8;KB_N_BYTES];
 type Matrices=[[Matrix;2];Ninja::SIDES];
@@ -90,6 +83,7 @@ pub struct NinjaKb{
     matrices:Matrices,
     keys:Keys,
     layer:usize,
+    last_layer:usize,
     led:ErasedPin<Output<PushPull>>,
     report_buff:ReportBuff,    
     delay_eeprom_cycles:u32,
@@ -105,7 +99,8 @@ pub enum State{
 
 pub struct I2cDevices {
     pub secondary_side: SecondarySideI2C<I2cProxy>,
-    pub eeprom:EepromT
+    #[cfg(feature="has_eeprom")]
+    pub eeprom:eeprom::EepromT
 }
 
 #[rtic::app(device = stm32f1xx_hal::pac)]
@@ -154,8 +149,7 @@ mod app {
         let mut led = gpioc.pc13.into_push_pull_output(&mut gpioc.crh).erase();
         led.set_high();
       
-        let layer:usize=0;
-  
+          
         //key pins, this can't be defeined elsewehere, 'cause Peripheral move reasons...
 
         #[cfg(feature="model_corne")]
@@ -232,10 +226,16 @@ mod app {
         );
 
         let i2c_bus: &'static _ =shared_bus::new_atomic_check!(I2cT = i2c).unwrap();
-        let address = SlaveAddr::default();
-        let eeprom = Eeprom24x::new_24x32(i2c_bus.acquire_i2c(), address);
         let secondary_side=SecondarySideI2C::new(i2c_bus.acquire_i2c());
+
+        #[cfg(feature="has_eeprom")]
+        let eeprom=eeprom::new_eeprom(i2c_bus.acquire_i2c());        
+        
+        #[cfg(feature="has_eeprom")]
         let i2c_devices=I2cDevices{secondary_side,eeprom};
+
+        #[cfg(not(feature="has_eeprom"))]
+        let i2c_devices=I2cDevices{secondary_side};
         
         info!("Conf i2c done.");
 
@@ -298,7 +298,8 @@ mod app {
 
         info!("Usb done.");
         led.set_high();
-        
+        let layer:usize=0;
+        let last_layer:usize=0;
         let ninja_kb= NinjaKb{
             rows,
             cols,
@@ -306,6 +307,7 @@ mod app {
             keys,
             report_buff,
             layer,
+            last_layer,
             led,            
             delay_eeprom_cycles:clocks.sysclk().raw()/50
         };
@@ -428,33 +430,18 @@ mod app {
         info!("read secondary_side keys");
         match i2c_devices.secondary_side.read_keys(){
             Ok(_)=>{
-                info!("right side found");
+                info!("secondary side found");
             },
             Err(_)=>info!("eeprom read_byte error")
         }
 
         cortex_m::asm::delay(ninja_kb.delay_eeprom_cycles);
-        info!("read conf from eeprom");
-        let memory_address = 0;
-        match i2c_devices.eeprom.read_byte(memory_address){
-            Ok(_)=>{
-                info!("eeprom read_byte");
-                let read_data = i2c_devices.eeprom.read_byte(memory_address).unwrap();        
-                info!("mark {}", read_data);
-                if read_data!=EEPROM_MARK{
-                    write_conf_to_eeprom(&mut ninja_kb.keys,&mut i2c_devices.eeprom,ninja_kb.delay_eeprom_cycles);
-                }else{
-                    info!("reading keys");
-                    read_conf_from_eeprom(&mut ninja_kb.keys,&mut i2c_devices.eeprom);
-                    info!("keys {}",ninja_kb.keys);
-                }
-            },
-            Err(_)=>info!("eeprom read_byte error")
-        }
+        #[cfg(feature="has_eeprom")]
+        eeprom::read_all(&mut ninja_kb.keys,&mut i2c_devices.eeprom,ninja_kb.delay_eeprom_cycles);
 
         loop {
             //cortex_m::asm::nop();
-            if update_kb_state(ninja_kb,&mut i2c_devices.secondary_side){
+            if keyboard::keyboard::update_kb_state(ninja_kb,&mut i2c_devices.secondary_side){
                 (&mut report_buff).lock(|report_buff| {
                     for i in 0..REPORT_BUFF_MAX {
                         report_buff[i]=ninja_kb.report_buff[i];
@@ -490,7 +477,8 @@ mod app {
                         },
                         State::ResetEeprom=>{
                             info!("idle ResetEeprom");
-                            i2c_devices.eeprom.write_byte(memory_address,0).unwrap();
+                            #[cfg(feature="has_eeprom")]
+                            eeprom::reset(&mut i2c_devices.eeprom);
                             *state=State::Idle;
                         },
                         State::SendReport=>{
@@ -513,225 +501,3 @@ fn usb_poll(usb_dev: &mut UsbDev, keyboard: &mut UsbKb) {
         keyboard.poll();
     }
 }
-
-fn update_kb_state(ninja_kb:&mut NinjaKb ,secondary_side:&mut SecondarySideI2C<I2cProxy>)-> bool{
-    let mut event=false;
-    for byte in 0..KB_N_BYTES  {
-        ninja_kb.matrices[0][1][byte]=ninja_kb.matrices[0][0][byte];
-        ninja_kb.matrices[1][1][byte]=ninja_kb.matrices[1][0][byte];
-    }
-    for col in 0..Ninja::COLS  {
-        ninja_kb.cols[col].set_low();
-        for row in 0..Ninja::ROWS {
-            let index=row*Ninja::COLS+col;
-            let byte=index>>3;
-            let bit=(index%8) as u8;
-            if ninja_kb.rows[row].is_low(){
-                ninja_kb.matrices[Ninja::MAIN][0][byte]|=1<<bit;
-            }else{
-                ninja_kb.matrices[Ninja::MAIN][0][byte]&= !(1<<bit);
-            }
-        }
-        ninja_kb.cols[col].set_high();
-    }
-    match secondary_side.read_keys(){
-        Ok(buffer) =>{
-            ninja_kb.matrices[Ninja::SECONDARY][0]=buffer;
-        },
-        Err(_) =>{
-            info!("i2c read/write error")
-        }
-    }
-    for side in 0..Ninja::SIDES{
-        for col in 0..Ninja::COLS  {
-            for row in 0..Ninja::ROWS{
-                let index=row*Ninja::COLS+col;
-                let byte=index>>3;
-                let bit=(index%8) as u8;
-                //pressed        
-                let m1=ninja_kb.matrices[side][Ninja::MAIN][byte] & (1<<bit);
-                let m2=ninja_kb.matrices[side][Ninja::SECONDARY][byte] & (1<<bit);
-                if m1!=0 && m2==0{
-                    ninja_kb.led.set_low();
-                    match ninja_kb.keys[side][ninja_kb.layer][row][col]{
-                        Key::Layer=>{
-                            ninja_kb.layer=1;
-                            event=false;
-                            continue;
-                        },
-                        Key::Code(code)=>{
-                            let mut k=REPORT_BUFF_MAX;
-                            let mut duplicate=false;
-                            for i in 0..REPORT_BUFF_MAX{
-                                if k==REPORT_BUFF_MAX && ninja_kb.report_buff[i]==Kc::NoEventIndicated {
-                                    k=i;
-                                }
-                                if ninja_kb.report_buff[i]==code{
-                                    duplicate=true;
-                                    break;
-                                }
-                            }
-                            if !duplicate && k< REPORT_BUFF_MAX {
-                                event=true;
-                                ninja_kb.report_buff[k]=code;
-                            }
-                        }
-                        _ =>()
-                    }                        
-                }
-                //released
-                if m1==0 && m2!=0{
-                    ninja_kb.led.set_high();
-                    match ninja_kb.keys[side][ninja_kb.layer][row][col]{
-                        Key::Layer=>{
-                            ninja_kb.layer=0;
-                            event=false;
-                            continue;
-                        },
-                        Key::Code(code)=>{
-                            for i in 0..REPORT_BUFF_MAX{
-                                if ninja_kb.report_buff[i]==code{
-                                    event=true;
-                                    ninja_kb.report_buff[i]=Kc::NoEventIndicated;
-                                    break;
-                                }
-                            }
-                        }
-                        _ =>()
-                    }
-                }
-            }
-        }
-    }
-    event
-}
-
-fn serialize_key(key:&Key)->(u8,u8){
-    match key{
-        Key::Code(code)=>(0,*code as u8),
-        Key::Layer=>(1,0),
-        Key::NoKey=>(2,0)
-    }
-}
-fn deserialize_key(b1:u8,b2:u8)->Key{
-    match b1{
-        0=> Key::Code(Kc::from(b2)),
-        1=> Key::Layer,
-        2=>Key::NoKey,
-        _=>Key::NoKey
-    }
-}
-fn serialize_keys(side:u8,layer:u8,side_data:&Side,bytes:&mut [u8;64]){
-    let mut i:usize=4;
-    bytes[0]=1;//keys
-    bytes[1]=0;//reserved
-    bytes[2]=side;
-    bytes[3]=layer;
-    for row in 0..Ninja::ROWS{
-        for col in 0..Ninja::COLS  {
-            let k=serialize_key(&side_data[row][col]);
-            if i+1 < 64{
-                bytes[i  ]=k.0;
-                bytes[i+1]=k.1;
-            }
-            i+=2;
-        }
-    }
-}
-fn deserialize_keys(bytes:&[u8;64],keys:&mut Keys){
-    let side=bytes[2] as usize;
-    let layer=bytes[3] as usize;                            
-    let mut k:usize=4;
-    for row in 0..Ninja::ROWS{
-        for col in 0..Ninja::COLS  {
-            let key=deserialize_key(bytes[k],bytes[k+1]);
-            if side < Ninja::SIDES && layer < Ninja::LAYERS {
-                keys[side][layer][row][col]=key;
-            }
-            if k+1 < 64{
-                k+=2;
-            }
-        }
-    }
-}
-fn write_conf_to_eeprom(keys:&mut Keys,eeprom:&mut EepromT,delay:u32){
-    let mut bytes=[[0u8;PAGE_SIZE];CONF_PAGES];
-    let mut i:usize=2;
-    let mut p=0;
-    bytes[p][0]=EEPROM_MARK;
-    info!("writing.");
-    for side in 0..Ninja::SIDES{
-        for layer in 0..Ninja::LAYERS{
-            for col in 0..Ninja::COLS{
-                for row in 0..Ninja::ROWS{
-                    let k=serialize_key(&keys[side][layer][row][col]);
-                    if i>=32{
-                        i=0;
-                        p+=1;
-                    }
-                    bytes[p][i  ]=k.0;
-                    bytes[p][i+1]=k.1;
-                    i+=2;
-                }
-            }
-        }
-    }
-    let memory_address = 0u32;
-    for page in 0..CONF_PAGES{
-        match eeprom.write_page(memory_address+((page as u32) << 5), &bytes[page]){
-            Ok(_)=>info!("eeprom page {} written",page),
-            Err(eeprom24x::Error::TooMuchData)=> info!("Error::TooMuchData"),
-            Err(_)=>info!("eeprom write error")
-        }
-        cortex_m::asm::delay(delay);
-    }
-}
-
-fn read_conf_from_eeprom(keys:&mut Keys,eeprom:&mut EepromT){
-    let memory_address = 0;
-    let mut bytes=[0u8;CONF_PAGES_SIZE];
-    info!("reading.");
-    match eeprom.read_data(memory_address, &mut bytes){
-        Ok(_)=>{            
-            let mut i:usize=2;
-            if bytes[0]==EEPROM_MARK{
-                for side in 0..Ninja::SIDES{
-                    for layer in 0..Ninja::LAYERS{
-                        for col in 0..Ninja::COLS{
-                            for row in 0..Ninja::ROWS{
-                                keys[side][layer][row][col]=deserialize_key(bytes[i],bytes[i+1]);
-                                i+=2;
-                            }
-                        }
-                    }
-                }
-            }else{
-                info!("no mark found");
-            }
-            info!("reading done.");
-        },
-        Err(_)=>info!("eeprom read error")
-    }
-}
-/*fn reset(keys:&mut Keys,keys_f:&Keys){
-    for side in 0..SIDES{
-        for layer in 0..LAYERS{
-            for col in 0..COLS{
-                for row in 0..ROWS{
-                    keys[side][layer][row][col]=keys_f[side][layer][row][col];
-                }
-            }
-        }
-    }
-}*/
-/*fn show(keys:&Keys){
-    for side in 0..SIDES{
-        info!("Side {}",side);
-        for layer in 0..LAYERS{
-            info!("Side {}",layer);
-            for row in 0..ROWS{
-                info!("{}",keys[side][layer][row]);
-            }
-        }
-    }
-}*/
