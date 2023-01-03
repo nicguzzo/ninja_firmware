@@ -549,8 +549,8 @@ fn update_kb_state(ninja_kb:&mut NinjaKb ,secondary_side:&mut SecondarySideI2C<I
                 let byte=index>>3;
                 let bit=(index%8) as u8;
                 //pressed        
-                let m1=ninja_kb.matrices[side][0][byte] & (1<<bit);
-                let m2=ninja_kb.matrices[side][1][byte] & (1<<bit);
+                let m1=ninja_kb.matrices[side][Ninja::MAIN][byte] & (1<<bit);
+                let m2=ninja_kb.matrices[side][Ninja::SECONDARY][byte] & (1<<bit);
                 if m1!=0 && m2==0{
                     ninja_kb.led.set_low();
                     match ninja_kb.keys[side][ninja_kb.layer][row][col]{
