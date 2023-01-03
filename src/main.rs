@@ -149,9 +149,16 @@ mod app {
         let mut led = gpioc.pc13.into_push_pull_output(&mut gpioc.crh).erase();
         led.set_high();
       
+
+        info!("MODEL {}",Ninja::MODEL);
+        info!("COLS {}",Ninja::COLS);
+        info!("ROWS {}",Ninja::ROWS);
+        info!("LAYERS {}",Ninja::LAYERS);
+        info!("MAIN {}",Ninja::MAIN);
+        info!("SECONDARY {}",Ninja::SECONDARY);
+
           
         //key pins, this can't be defeined elsewehere, 'cause Peripheral move reasons...
-
         #[cfg(feature="model_corne")]
         let rows:Rows=[
             gpiob.pb5.into_pull_up_input(&mut gpiob.crl).erase(),
@@ -290,9 +297,27 @@ mod app {
                     .add_interface(config)
                     .build(usb_bus);
                 
+        
+
+        #[cfg(feature="model_ninja1")]
         let usb_dev:UsbDev = UsbDeviceBuilder::new(usb_bus, UsbVidPid(0xcaca, 0x0001))
-        .manufacturer("Nicguzzo")
+        .manufacturer("nicguzzo")
+        .product("Ninja Keyboard v1")
+        .serial_number("0")
+        .build();
+
+        #[cfg(feature="model_corne")]
+        let usb_dev:UsbDev = UsbDeviceBuilder::new(usb_bus, UsbVidPid(0xcaca, 0x0002))
+        .manufacturer("nicguzzo")
         .product("Ninja Keyboard Corne")
+        .serial_number("0")
+        .build();
+
+
+        #[cfg(feature="model_ninja2")]
+        let usb_dev:UsbDev = UsbDeviceBuilder::new(usb_bus, UsbVidPid(0xcaca, 0x0003))
+        .manufacturer("nicguzzo")
+        .product("Ninja Keyboard v2")
         .serial_number("0")
         .build();
 

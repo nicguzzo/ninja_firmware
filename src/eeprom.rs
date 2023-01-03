@@ -39,6 +39,7 @@ pub fn read_all(keys:&mut Keys,eeprom:&mut EepromT,delay_eeprom_cycles:u32){
         },
         Err(_)=>info!("eeprom read_byte error")
     }
+    info!("read conf from eeprom done.");
 }
 pub fn reset(eeprom:&mut EepromT){
     let memory_address = 0;

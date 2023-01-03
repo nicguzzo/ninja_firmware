@@ -4,6 +4,7 @@ use usbd_human_interface_device::page::Keyboard as K;
 use crate::{keyboard::{keyboard::{KeyboardTrait, Ninja}, key::{Key, LayerCMD}}, Keys};
 
 impl KeyboardTrait for Ninja {
+    const MODEL:u8 = 2;
     const COLS:usize=6;
     const ROWS:usize=4;
     const MAIN:usize=0;
@@ -20,8 +21,8 @@ impl KeyboardTrait for Ninja {
                 ],
                 [
                     [Key::Code(K::F1),Key::Code(K::F2),Key::Code(K::F3),Key::Code(K::F4),Key::Code(K::F5),Key::Code(K::F6) ],
-                    [Key::Code(K::Keyboard1),Key::Code(K::Keyboard1),Key::Code(K::Keyboard2),Key::Code(K::Keyboard3),Key::Code(K::Keyboard4),Key::Code(K::Keyboard5)],
-                    [Key::Code(K::Backslash),Key::Code(K::Z),Key::Code(K::X) ,Key::Code(K::C), Key::Code(K::V) ,Key::Code(K::B)  ],
+                    [Key::Code(K::Backslash),Key::Code(K::Keyboard1),Key::Code(K::Keyboard2),Key::Code(K::Keyboard3),Key::Code(K::Keyboard4),Key::Code(K::Keyboard5)],
+                    [Key::Code(K::CapsLock),Key::Code(K::Z),Key::Code(K::X) ,Key::Code(K::C), Key::Code(K::V) ,Key::Code(K::B)  ],
                     [Key::NoKey,Key::NoKey,Key::NoKey ,Key::Code(K::LeftAlt),Key::Code(K::RightGUI),Key::Layer(LayerCMD::TMP(1)) ],
                 ],
                 [

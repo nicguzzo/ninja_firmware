@@ -2,6 +2,7 @@ use usbd_human_interface_device::page::Keyboard as K;
 use crate::{keyboard::{keyboard::{KeyboardTrait, Ninja}, key::{Key,LayerCMD}}, Keys};
 
 impl KeyboardTrait for Ninja {
+    const MODEL:u8 = 1; //ninja v1
     const COLS:usize=6;
     const ROWS:usize=5;
     const MAIN:usize=1;
