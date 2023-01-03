@@ -2,14 +2,14 @@ use embedded_hal::blocking::i2c::WriteRead;
 
 const SECONDARY_KB_ADDRESS: u8 = 0x08;
 
-pub struct RightSideI2C<I2C>
+pub struct SecondarySideI2C<I2C>
 where
     I2C: WriteRead,
 {
     i2c: I2C
 }
 
-impl<I2C> RightSideI2C<I2C>
+impl<I2C> SecondarySideI2C<I2C>
 where
     I2C: WriteRead,
 {

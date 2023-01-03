@@ -6,6 +6,8 @@ use crate::{keyboard::{keyboard::{KeyboardTrait, Ninja}, key::Key}, Keys};
 impl KeyboardTrait for Ninja {
     const COLS:usize=6;
     const ROWS:usize=4;
+    const MAIN:usize=0;
+    const SECONDARY:usize=1;
 
     fn get_default_keys()->Keys{
         [

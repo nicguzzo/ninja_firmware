@@ -38,13 +38,13 @@ use eeprom24x::{Eeprom24x, SlaveAddr};
 use defmt::{info};
 //use cortex_m::asm::delay;
 mod config_class;
-mod right_side;
+mod secondary_side;
 mod keyboard;
 
 use crate::keyboard::keyboard::KeyboardTrait;
-use keyboard::keyboard::Ninja;
+use keyboard::keyboard::{Ninja, KB_N_BYTES};
 use config_class::RawConfInterface;
-use right_side::RightSideI2C;
+use secondary_side::SecondarySideI2C;
 use keyboard::key::Key;
 
 const REPORT_BUFF_MAX:usize=42;
@@ -67,7 +67,7 @@ type EepromT=Eeprom24x<I2cProxy,eeprom24x::page_size::B32,eeprom24x::addr_size::
 type Rows = [ErasedPin<Input<PullUp>>; Ninja::ROWS];
 type Cols = [ErasedPin<Output<PushPull>>; Ninja::COLS];
 
-const KB_N_BYTES:usize = ((Ninja::COLS*Ninja::ROWS) + 7 & !7)/8;
+
 const CONF_KEY_BYTES:usize=2; //bytes per key in conf report
 const CONF_SIZE:usize=Ninja::COLS*Ninja::ROWS*Ninja::LAYERS*Ninja::SIDES*CONF_KEY_BYTES+2;//2 byte mark size
 const PAGE_SIZE:usize=32;
@@ -104,7 +104,7 @@ pub enum State{
 }
 
 pub struct I2cDevices {
-    pub right_side: RightSideI2C<I2cProxy>,
+    pub secondary_side: SecondarySideI2C<I2cProxy>,
     pub eeprom:EepromT
 }
 
@@ -153,14 +153,9 @@ mod app {
         
         let mut led = gpioc.pc13.into_push_pull_output(&mut gpioc.crh).erase();
         led.set_high();
-  
-        
-            
-        
-            
+      
         let layer:usize=0;
-        
-
+  
         //key pins, this can't be defeined elsewehere, 'cause Peripheral move reasons...
 
         #[cfg(feature="model_corne")]
@@ -239,8 +234,8 @@ mod app {
         let i2c_bus: &'static _ =shared_bus::new_atomic_check!(I2cT = i2c).unwrap();
         let address = SlaveAddr::default();
         let eeprom = Eeprom24x::new_24x32(i2c_bus.acquire_i2c(), address);
-        let right_side=RightSideI2C::new(i2c_bus.acquire_i2c());
-        let i2c_devices=I2cDevices{right_side,eeprom};
+        let secondary_side=SecondarySideI2C::new(i2c_bus.acquire_i2c());
+        let i2c_devices=I2cDevices{secondary_side,eeprom};
         
         info!("Conf i2c done.");
 
@@ -430,8 +425,8 @@ mod app {
         let mut conf_report=cx.shared.conf_report;
 
         cortex_m::asm::delay(ninja_kb.delay_eeprom_cycles);
-        info!("read right_side keys");
-        match i2c_devices.right_side.read_keys(){
+        info!("read secondary_side keys");
+        match i2c_devices.secondary_side.read_keys(){
             Ok(_)=>{
                 info!("right side found");
             },
@@ -459,7 +454,7 @@ mod app {
 
         loop {
             //cortex_m::asm::nop();
-            if ninja(ninja_kb,&mut i2c_devices.right_side){
+            if update_kb_state(ninja_kb,&mut i2c_devices.secondary_side){
                 (&mut report_buff).lock(|report_buff| {
                     for i in 0..REPORT_BUFF_MAX {
                         report_buff[i]=ninja_kb.report_buff[i];
@@ -519,7 +514,7 @@ fn usb_poll(usb_dev: &mut UsbDev, keyboard: &mut UsbKb) {
     }
 }
 
-fn ninja(ninja_kb:&mut NinjaKb ,right_side:&mut RightSideI2C<I2cProxy>)-> bool{
+fn update_kb_state(ninja_kb:&mut NinjaKb ,secondary_side:&mut SecondarySideI2C<I2cProxy>)-> bool{
     let mut event=false;
     for byte in 0..KB_N_BYTES  {
         ninja_kb.matrices[0][1][byte]=ninja_kb.matrices[0][0][byte];
@@ -532,16 +527,16 @@ fn ninja(ninja_kb:&mut NinjaKb ,right_side:&mut RightSideI2C<I2cProxy>)-> bool{
             let byte=index>>3;
             let bit=(index%8) as u8;
             if ninja_kb.rows[row].is_low(){
-                ninja_kb.matrices[0][0][byte]|=1<<bit;
+                ninja_kb.matrices[Ninja::MAIN][0][byte]|=1<<bit;
             }else{
-                ninja_kb.matrices[0][0][byte]&= !(1<<bit);
+                ninja_kb.matrices[Ninja::MAIN][0][byte]&= !(1<<bit);
             }
         }
         ninja_kb.cols[col].set_high();
     }
-    match right_side.read_keys(){
+    match secondary_side.read_keys(){
         Ok(buffer) =>{
-            ninja_kb.matrices[1][0]=buffer;
+            ninja_kb.matrices[Ninja::SECONDARY][0]=buffer;
         },
         Err(_) =>{
             info!("i2c read/write error")
