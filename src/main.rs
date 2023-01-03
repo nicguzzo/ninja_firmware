@@ -172,21 +172,21 @@ mod app {
         
         #[cfg(feature="model_ninja1")]
         let rows:Rows=[
-            gpiob.pb5.into_pull_up_input(&mut gpiob.crl).erase(),
-            gpiob.pb6.into_pull_up_input(&mut gpiob.crl).erase(),
-            gpiob.pb7.into_pull_up_input(&mut gpiob.crl).erase(),
-            gpiob.pb8.into_pull_up_input(&mut gpiob.crh).erase(),
-            gpiob.pb9.into_pull_up_input(&mut gpiob.crh).erase()
+            gpioa.pa3.into_pull_up_input(&mut gpioa.crl).erase(),
+            gpioa.pa4.into_pull_up_input(&mut gpioa.crl).erase(),
+            gpioa.pa5.into_pull_up_input(&mut gpioa.crl).erase(),
+            gpioa.pa6.into_pull_up_input(&mut gpioa.crl).erase(),
+            gpioa.pa7.into_pull_up_input(&mut gpioa.crl).erase(),
         ];
         
         #[cfg(feature="model_ninja1")]
         let cols:Cols= [
-            gpiob.pb12.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase(),
-            gpiob.pb13.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase(),
-            gpiob.pb14.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase(),
-            gpiob.pb15.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase(),
-             gpiob_pb3.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase(),
-             gpiob_pb4.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase()
+            gpiob_pb3.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase(),
+            gpiob_pb4.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase(),
+            gpiob.pb5.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase(),            
+            gpiob.pb6.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase(),
+            gpiob.pb7.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase(),
+            gpiob.pb8.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase(),
         ]; 
 
 
