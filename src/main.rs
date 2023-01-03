@@ -1,10 +1,11 @@
 #![no_main]
 #![no_std]
-
+//#![feature(generic_const_exprs)]
 use defmt_rtt as _; 
+
 // global logger
 use panic_probe as _;
-use defmt::Format;
+//use defmt::Format;
 
 
 #[defmt::panic_handler]
@@ -22,10 +23,14 @@ use stm32f1xx_hal::{pac, usb::Peripheral};
 use stm32f1xx_hal::{timer::{Event,CounterUs},i2c::{BlockingI2c, Mode, DutyCycle}};
 use usb_device::class_prelude::*;
 use usb_device::prelude::*;
-use usbd_human_interface_device::device::consumer::{MultipleConsumerReport, ConsumerControlInterface};
-use usbd_human_interface_device::device::mouse::{WheelMouseReport, WheelMouseInterface};
-use usbd_human_interface_device::page::{Keyboard,Consumer};
-use usbd_human_interface_device::device::keyboard::{KeyboardLedsReport, NKROBootKeyboardInterface};
+//use usbd_human_interface_device::device::consumer::{MultipleConsumerReport, ConsumerControlInterface};
+//use usbd_human_interface_device::device::mouse::{WheelMouseReport, WheelMouseInterface};
+//use usbd_human_interface_device::page::Consumer;
+//use usbd_human_interface_device::device::keyboard::KeyboardLedsReport;
+use usbd_human_interface_device::device::mouse::WheelMouseInterface;
+use usbd_human_interface_device::device::consumer::ConsumerControlInterface;
+use usbd_human_interface_device::page::Keyboard as Kc;
+use usbd_human_interface_device::device::keyboard::NKROBootKeyboardInterface;
 use usbd_human_interface_device::prelude::*;
 
 use eeprom24x::{Eeprom24x, SlaveAddr};
@@ -34,39 +39,18 @@ use defmt::{info};
 //use cortex_m::asm::delay;
 mod config_class;
 mod right_side;
+mod keyboard;
+
+use crate::keyboard::keyboard::KeyboardTrait;
+use keyboard::keyboard::Ninja;
 use config_class::RawConfInterface;
 use right_side::RightSideI2C;
+use keyboard::key::Key;
 
-#[cfg(feature="model_corne")]
-const COLS:usize=6;
-#[cfg(feature="model_corne")]
-const ROWS:usize=4;
-
-#[cfg(feature="model_ninja1")]
-const COLS:usize=6;
-#[cfg(feature="model_ninja1")]
-const ROWS:usize=5;
-
-#[cfg(feature="model_ninja2")]
-const COLS:usize=6;
-#[cfg(feature="model_ninja2")]
-const ROWS:usize=5;
-
-
-const LAYERS:usize=4;
-const SIDES:usize=2;
 const REPORT_BUFF_MAX:usize=42;
-const CONF_KEY_BYTES:usize=2; //bytes per key in conf report
 const EEPROM_MARK:u8 = 0xAB;
-const CONF_SIZE:usize=COLS*ROWS*LAYERS*SIDES*CONF_KEY_BYTES+2;//2 byte mark size
-const PAGE_SIZE:usize=32;
-const CONF_PAGES:usize=(CONF_SIZE>>5)+1;
-const CONF_PAGES_SIZE:usize=PAGE_SIZE*CONF_PAGES;
-
-const KB_N_BYTES:usize = ((COLS*ROWS) + 7 & !7)/8;
 
 type UsbDev<'a>  = UsbDevice<'a, UsbBus<Peripheral>>;
-
 type UsbKb<'a> =UsbHidClass<UsbBus<Peripheral>, 
         HCons<RawConfInterface<'a, UsbBus<Peripheral>>, 
         HCons<ConsumerControlInterface<'a, UsbBus<Peripheral>>, 
@@ -79,38 +63,27 @@ type I2cT=BlockingI2c::<I2C2, (PB10<Alternate<OpenDrain>>, PB11<Alternate<OpenDr
 type I2cProxy = shared_bus::I2cProxy<'static, shared_bus::AtomicCheckMutex<I2cT>>;
 type EepromT=Eeprom24x<I2cProxy,eeprom24x::page_size::B32,eeprom24x::addr_size::TwoBytes>;
 
+
+type Rows = [ErasedPin<Input<PullUp>>; Ninja::ROWS];
+type Cols = [ErasedPin<Output<PushPull>>; Ninja::COLS];
+
+const KB_N_BYTES:usize = ((Ninja::COLS*Ninja::ROWS) + 7 & !7)/8;
+const CONF_KEY_BYTES:usize=2; //bytes per key in conf report
+const CONF_SIZE:usize=Ninja::COLS*Ninja::ROWS*Ninja::LAYERS*Ninja::SIDES*CONF_KEY_BYTES+2;//2 byte mark size
+const PAGE_SIZE:usize=32;
+const CONF_PAGES:usize=(CONF_SIZE>>5)+1;
+const CONF_PAGES_SIZE:usize=PAGE_SIZE*CONF_PAGES;
+
 type Matrix= [u8;KB_N_BYTES];
-type Matrices=[[Matrix;2];SIDES];
+type Matrices=[[Matrix;2];Ninja::SIDES];
 
-type Rows = [ErasedPin<Input<PullUp>>; ROWS];
-type Cols = [ErasedPin<Output<PushPull>>; COLS];
+type Side = [[Key; Ninja::COLS]; Ninja::ROWS];
+type Layers=[Side;Ninja::LAYERS];
+type Keys= [Layers;Ninja::SIDES];
 
-type ReportBuff=[Keyboard;REPORT_BUFF_MAX];
+type ReportBuff=[Kc;REPORT_BUFF_MAX];
 
-#[derive(Clone,Copy)]
-enum Key{
-    Code(Keyboard),
-    Layer,
-    NoKey,
-}
-impl defmt::Format for Key {
-    fn format(&self, f: defmt::Formatter) {
-        match self{
-            Key::Code(k)=>{
-                defmt::write!(f,"k {}",*k as u8)
-            },
-            Key::Layer=>{
-                defmt::write!(f,"Lyr")
-            },
-            Key::NoKey=>{
-                defmt::write!(f,"Nk")
-            }
-        }
-    }
-}
-type Side = [[Key; COLS]; ROWS];
-type Layers=[Side;LAYERS];
-type Keys= [Layers;SIDES];
+
 pub struct NinjaKb{
     rows:Rows,
     cols:Cols,
@@ -170,7 +143,7 @@ mod app {
 
         assert!(clocks.usbclk_valid());
 
-        let mut afio = cx.device.AFIO.constrain();
+        let mut afio  = cx.device.AFIO.constrain();
         let mut gpioa = cx.device.GPIOA.split();
         let mut gpiob = cx.device.GPIOB.split();
         let mut gpioc = cx.device.GPIOC.split();
@@ -181,37 +154,59 @@ mod app {
         let mut led = gpioc.pc13.into_push_pull_output(&mut gpioc.crh).erase();
         led.set_high();
   
-        //key pins
-
-        let row0 =gpiob.pb5.into_pull_up_input(&mut gpiob.crl).erase();
-        let row1 =gpiob.pb6.into_pull_up_input(&mut gpiob.crl).erase();
-        let row2 =gpiob.pb7.into_pull_up_input(&mut gpiob.crl).erase();
-        let row3 =gpiob.pb8.into_pull_up_input(&mut gpiob.crh).erase();
-
-        let col0 = gpiob.pb12.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase();
-        let col1 = gpiob.pb13.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase();
-        let col2 = gpiob.pb14.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase();
-        let col3 = gpiob.pb15.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase();
-        let col4 =  gpiob_pb3.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase();
-        let col5 =  gpiob_pb4.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase();
         
+            
+        
+            
         let layer:usize=0;
-        #[cfg(feature="model_corne")]
-        let rows:Rows=[row0,row1,row2,row3];
-        #[cfg(feature="model_corne")]
-        let cols:Cols=[col0,col1,col2,col3,col4,col5];
+        
 
-        #[cfg(any(feature="model_ninja1",feature="model_ninja2"))]
-        let rows:Rows=[row0,row1,row2,row3,row4];
-        #[cfg(any(feature="model_ninja1",feature="model_ninja2"))]
-        let cols:Cols=[col0,col1,col2,col3,col4,col5];
+        //key pins, this can't be defeined elsewehere, 'cause Peripheral move reasons...
+
+        #[cfg(feature="model_corne")]
+        let rows:Rows=[
+            gpiob.pb5.into_pull_up_input(&mut gpiob.crl).erase(),
+            gpiob.pb6.into_pull_up_input(&mut gpiob.crl).erase(),
+            gpiob.pb7.into_pull_up_input(&mut gpiob.crl).erase(),
+            gpiob.pb8.into_pull_up_input(&mut gpiob.crh).erase()
+        ];
+        
+        #[cfg(feature="model_corne")]
+        let cols:Cols= [
+            gpiob.pb12.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase(),
+            gpiob.pb13.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase(),
+            gpiob.pb14.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase(),
+            gpiob.pb15.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase(),
+             gpiob_pb3.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase(),
+             gpiob_pb4.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase()
+        ];   
+        
+        #[cfg(feature="model_ninja1")]
+        let rows:Rows=[
+            gpiob.pb5.into_pull_up_input(&mut gpiob.crl).erase(),
+            gpiob.pb6.into_pull_up_input(&mut gpiob.crl).erase(),
+            gpiob.pb7.into_pull_up_input(&mut gpiob.crl).erase(),
+            gpiob.pb8.into_pull_up_input(&mut gpiob.crh).erase(),
+            gpiob.pb9.into_pull_up_input(&mut gpiob.crh).erase()
+        ];
+        
+        #[cfg(feature="model_ninja1")]
+        let cols:Cols= [
+            gpiob.pb12.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase(),
+            gpiob.pb13.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase(),
+            gpiob.pb14.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase(),
+            gpiob.pb15.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase(),
+             gpiob_pb3.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase(),
+             gpiob_pb4.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase()
+        ]; 
+
 
         //keyboard matrix
-        let matrices:Matrices=[[[0u8;KB_N_BYTES];2];SIDES];
+        let matrices:Matrices=[[[0u8;KB_N_BYTES];2];Ninja::SIDES];
         
-        let keys:Keys=get_default_keys();
+        let keys:Keys=Ninja::get_default_keys();
 
-        let report_buff:ReportBuff = [Keyboard::NoEventIndicated;REPORT_BUFF_MAX];
+        let report_buff:ReportBuff = [Kc::NoEventIndicated;REPORT_BUFF_MAX];
         
         info!("size {}",CONF_SIZE);
         
@@ -477,10 +472,10 @@ mod app {
                         State::SendKbInfo=>{
                             info!("idle SendKbInfo");
                             conf_report.packet[0]=0;//kbinfo
-                            conf_report.packet[1]=SIDES as u8;
-                            conf_report.packet[2]=LAYERS as u8;
-                            conf_report.packet[3]=ROWS as u8;
-                            conf_report.packet[4]=COLS as u8;
+                            conf_report.packet[1]=Ninja::SIDES as u8;
+                            conf_report.packet[2]=Ninja::LAYERS as u8;
+                            conf_report.packet[3]=Ninja::ROWS as u8;
+                            conf_report.packet[4]=Ninja::COLS as u8;
                             *state=State::SendReport;
                         },                        
                         State::ReceiveKeys(side,layer)=>{
@@ -491,7 +486,7 @@ mod app {
                         },
                         State::RequestKeys(side,layer)=>{
                             info!("idle RequestKeys");
-                            if (*side as usize) < SIDES && (*layer as usize ) < LAYERS{
+                            if (*side as usize) < Ninja::SIDES && (*layer as usize ) < Ninja::LAYERS{
                                 serialize_keys(*side,*layer,&ninja_kb.keys[*side as usize][*layer as usize],&mut conf_report.packet);
                                 *state=State::SendReport;
                             }else{
@@ -530,10 +525,10 @@ fn ninja(ninja_kb:&mut NinjaKb ,right_side:&mut RightSideI2C<I2cProxy>)-> bool{
         ninja_kb.matrices[0][1][byte]=ninja_kb.matrices[0][0][byte];
         ninja_kb.matrices[1][1][byte]=ninja_kb.matrices[1][0][byte];
     }
-    for col in 0..COLS  {
+    for col in 0..Ninja::COLS  {
         ninja_kb.cols[col].set_low();
-        for row in 0..ROWS {
-            let index=row*COLS+col;
+        for row in 0..Ninja::ROWS {
+            let index=row*Ninja::COLS+col;
             let byte=index>>3;
             let bit=(index%8) as u8;
             if ninja_kb.rows[row].is_low(){
@@ -552,10 +547,10 @@ fn ninja(ninja_kb:&mut NinjaKb ,right_side:&mut RightSideI2C<I2cProxy>)-> bool{
             info!("i2c read/write error")
         }
     }
-    for side in 0..SIDES{
-        for col in 0..COLS  {
-            for row in 0..ROWS{
-                let index=row*COLS+col;
+    for side in 0..Ninja::SIDES{
+        for col in 0..Ninja::COLS  {
+            for row in 0..Ninja::ROWS{
+                let index=row*Ninja::COLS+col;
                 let byte=index>>3;
                 let bit=(index%8) as u8;
                 //pressed        
@@ -573,7 +568,7 @@ fn ninja(ninja_kb:&mut NinjaKb ,right_side:&mut RightSideI2C<I2cProxy>)-> bool{
                             let mut k=REPORT_BUFF_MAX;
                             let mut duplicate=false;
                             for i in 0..REPORT_BUFF_MAX{
-                                if k==REPORT_BUFF_MAX && ninja_kb.report_buff[i]==Keyboard::NoEventIndicated {
+                                if k==REPORT_BUFF_MAX && ninja_kb.report_buff[i]==Kc::NoEventIndicated {
                                     k=i;
                                 }
                                 if ninja_kb.report_buff[i]==code{
@@ -602,7 +597,7 @@ fn ninja(ninja_kb:&mut NinjaKb ,right_side:&mut RightSideI2C<I2cProxy>)-> bool{
                             for i in 0..REPORT_BUFF_MAX{
                                 if ninja_kb.report_buff[i]==code{
                                     event=true;
-                                    ninja_kb.report_buff[i]=Keyboard::NoEventIndicated;
+                                    ninja_kb.report_buff[i]=Kc::NoEventIndicated;
                                     break;
                                 }
                             }
@@ -625,7 +620,7 @@ fn serialize_key(key:&Key)->(u8,u8){
 }
 fn deserialize_key(b1:u8,b2:u8)->Key{
     match b1{
-        0=> Key::Code(Keyboard::from(b2)),
+        0=> Key::Code(Kc::from(b2)),
         1=> Key::Layer,
         2=>Key::NoKey,
         _=>Key::NoKey
@@ -637,8 +632,8 @@ fn serialize_keys(side:u8,layer:u8,side_data:&Side,bytes:&mut [u8;64]){
     bytes[1]=0;//reserved
     bytes[2]=side;
     bytes[3]=layer;
-    for row in 0..ROWS{
-        for col in 0..COLS  {
+    for row in 0..Ninja::ROWS{
+        for col in 0..Ninja::COLS  {
             let k=serialize_key(&side_data[row][col]);
             if i+1 < 64{
                 bytes[i  ]=k.0;
@@ -652,10 +647,10 @@ fn deserialize_keys(bytes:&[u8;64],keys:&mut Keys){
     let side=bytes[2] as usize;
     let layer=bytes[3] as usize;                            
     let mut k:usize=4;
-    for row in 0..ROWS{
-        for col in 0..COLS  {
+    for row in 0..Ninja::ROWS{
+        for col in 0..Ninja::COLS  {
             let key=deserialize_key(bytes[k],bytes[k+1]);
-            if side < SIDES && layer < LAYERS {
+            if side < Ninja::SIDES && layer < Ninja::LAYERS {
                 keys[side][layer][row][col]=key;
             }
             if k+1 < 64{
@@ -670,10 +665,10 @@ fn write_conf_to_eeprom(keys:&mut Keys,eeprom:&mut EepromT,delay:u32){
     let mut p=0;
     bytes[p][0]=EEPROM_MARK;
     info!("writing.");
-    for side in 0..SIDES{
-        for layer in 0..LAYERS{
-            for col in 0..COLS{
-                for row in 0..ROWS{
+    for side in 0..Ninja::SIDES{
+        for layer in 0..Ninja::LAYERS{
+            for col in 0..Ninja::COLS{
+                for row in 0..Ninja::ROWS{
                     let k=serialize_key(&keys[side][layer][row][col]);
                     if i>=32{
                         i=0;
@@ -705,10 +700,10 @@ fn read_conf_from_eeprom(keys:&mut Keys,eeprom:&mut EepromT){
         Ok(_)=>{            
             let mut i:usize=2;
             if bytes[0]==EEPROM_MARK{
-                for side in 0..SIDES{
-                    for layer in 0..LAYERS{
-                        for col in 0..COLS{
-                            for row in 0..ROWS{
+                for side in 0..Ninja::SIDES{
+                    for layer in 0..Ninja::LAYERS{
+                        for col in 0..Ninja::COLS{
+                            for row in 0..Ninja::ROWS{
                                 keys[side][layer][row][col]=deserialize_key(bytes[i],bytes[i+1]);
                                 i+=2;
                             }
@@ -745,130 +740,3 @@ fn read_conf_from_eeprom(keys:&mut Keys,eeprom:&mut EepromT){
         }
     }
 }*/
-#[cfg(feature="model_corne")]
-fn get_default_keys()->Keys{
-    [
-        [
-            [
-                [Key::Code(Keyboard::Escape),Key::Code(Keyboard::Q),Key::Code(Keyboard::W),Key::Code(Keyboard::E),Key::Code(Keyboard::R),Key::Code(Keyboard::T)],
-                [Key::Code(Keyboard::Tab),Key::Code(Keyboard::A),Key::Code(Keyboard::S),Key::Code(Keyboard::D),Key::Code(Keyboard::F),Key::Code(Keyboard::G)],
-                [Key::Code(Keyboard::LeftShift),Key::Code(Keyboard::Z),Key::Code(Keyboard::X),Key::Code(Keyboard::C),Key::Code(Keyboard::V),Key::Code(Keyboard::B)],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::Code(Keyboard::LeftControl),Key::Code(Keyboard::LeftGUI),Key::Layer ],
-            ],
-            [
-                [Key::Code(Keyboard::F1),Key::Code(Keyboard::F2),Key::Code(Keyboard::F3),Key::Code(Keyboard::F4),Key::Code(Keyboard::F5),Key::Code(Keyboard::F6) ],
-                [Key::Code(Keyboard::Keyboard1),Key::Code(Keyboard::Keyboard1),Key::Code(Keyboard::Keyboard2),Key::Code(Keyboard::Keyboard3),Key::Code(Keyboard::Keyboard4),Key::Code(Keyboard::Keyboard5)],
-                [Key::Code(Keyboard::Backslash),Key::Code(Keyboard::Z),Key::Code(Keyboard::X) ,Key::Code(Keyboard::C), Key::Code(Keyboard::V) ,Key::Code(Keyboard::B)  ],
-                [Key::NoKey,Key::NoKey,Key::NoKey ,Key::Code(Keyboard::LeftAlt),Key::Code(Keyboard::RightGUI),Key::Layer ],
-            ],
-            [
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-            ]
-            ,
-            [
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-            ]
-        ],
-        [
-            [
-                [Key::Code(Keyboard::Y), Key::Code(Keyboard::U),Key::Code(Keyboard::I),Key::Code(Keyboard::O),Key::Code(Keyboard::P),Key::Code(Keyboard::DeleteBackspace) ],
-                [Key::Code(Keyboard::H), Key::Code(Keyboard::J),Key::Code(Keyboard::K),Key::Code(Keyboard::L),Key::Code(Keyboard::Semicolon),Key::Code(Keyboard::Backslash) ],
-                [Key::Code(Keyboard::N), Key::Code(Keyboard::M),Key::Code(Keyboard::Comma),Key::Code(Keyboard::LeftBrace),Key::Code(Keyboard::RightBrace),Key::Code(Keyboard::Apostrophe) ],
-                [Key::Code(Keyboard::ReturnEnter),Key::Code(Keyboard::Space),Key::Code(Keyboard::Dot) ,Key::NoKey,Key::NoKey,Key::NoKey]
-            ],
-            [
-                [Key::Code(Keyboard::F7)    ,Key::Code(Keyboard::F8)  ,Key::Code(Keyboard::F9)    ,Key::Code(Keyboard::F10)   ,Key::Code(Keyboard::F11)     ,Key::Code(Keyboard::F12) ],
-                [Key::Code(Keyboard::Keyboard6),Key::Code(Keyboard::UpArrow)  ,Key::Code(Keyboard::Keyboard7),Key::Code(Keyboard::Keyboard8),Key::Code(Keyboard::Keyboard9),Key::Code(Keyboard::Keyboard0)],
-                [Key::Code(Keyboard::LeftArrow)  ,Key::Code(Keyboard::DownArrow),Key::Code(Keyboard::RightArrow) ,Key::Code(Keyboard::PageUp),Key::Code(Keyboard::PageDown),Key::Code(Keyboard::Minus) ],
-                [Key::Code(Keyboard::DeleteForward),Key::Code(Keyboard::Home),Key::Code(Keyboard::End)   ,Key::NoKey           ,Key::NoKey              ,Key::NoKey]
-            ],
-            [
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-            ]
-            ,
-            [
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-            ]
-        ]
-    ]
-}
-
-#[cfg(feature="model_ninja1")]
-fn get_default_keys()->Keys{
-    [
-        [
-            [
-                [Key::Code(Keyboard::Escape),Key::Code(Keyboard::Q),Key::Code(Keyboard::W),Key::Code(Keyboard::E),Key::Code(Keyboard::R),Key::Code(Keyboard::T)],
-                [Key::Code(Keyboard::Tab),Key::Code(Keyboard::A),Key::Code(Keyboard::S),Key::Code(Keyboard::D),Key::Code(Keyboard::F),Key::Code(Keyboard::G)],
-                [Key::Code(Keyboard::LeftShift),Key::Code(Keyboard::Z),Key::Code(Keyboard::X),Key::Code(Keyboard::C),Key::Code(Keyboard::V),Key::Code(Keyboard::B)],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::Code(Keyboard::LeftControl),Key::Code(Keyboard::LeftGUI),Key::Layer ],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-            ],
-            [
-                [Key::Code(Keyboard::F1),Key::Code(Keyboard::F2),Key::Code(Keyboard::F3),Key::Code(Keyboard::F4),Key::Code(Keyboard::F5),Key::Code(Keyboard::F6) ],
-                [Key::Code(Keyboard::Keyboard1),Key::Code(Keyboard::Keyboard1),Key::Code(Keyboard::Keyboard2),Key::Code(Keyboard::Keyboard3),Key::Code(Keyboard::Keyboard4),Key::Code(Keyboard::Keyboard5)],
-                [Key::Code(Keyboard::Backslash),Key::Code(Keyboard::Z),Key::Code(Keyboard::X) ,Key::Code(Keyboard::C), Key::Code(Keyboard::V) ,Key::Code(Keyboard::B)  ],
-                [Key::NoKey,Key::NoKey,Key::NoKey ,Key::Code(Keyboard::LeftAlt),Key::Code(Keyboard::RightGUI),Key::Layer ],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-            ],
-            [
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-            ]
-            ,
-            [
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-            ]
-        ],
-        [
-            [
-                [Key::Code(Keyboard::Y), Key::Code(Keyboard::U),Key::Code(Keyboard::I),Key::Code(Keyboard::O),Key::Code(Keyboard::P),Key::Code(Keyboard::DeleteBackspace) ],
-                [Key::Code(Keyboard::H), Key::Code(Keyboard::J),Key::Code(Keyboard::K),Key::Code(Keyboard::L),Key::Code(Keyboard::Semicolon),Key::Code(Keyboard::Backslash) ],
-                [Key::Code(Keyboard::N), Key::Code(Keyboard::M),Key::Code(Keyboard::Comma),Key::Code(Keyboard::LeftBrace),Key::Code(Keyboard::RightBrace),Key::Code(Keyboard::Apostrophe) ],
-                [Key::Code(Keyboard::ReturnEnter),Key::Code(Keyboard::Space),Key::Code(Keyboard::Dot) ,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-            ],
-            [
-                [Key::Code(Keyboard::F7)    ,Key::Code(Keyboard::F8)  ,Key::Code(Keyboard::F9)    ,Key::Code(Keyboard::F10)   ,Key::Code(Keyboard::F11)     ,Key::Code(Keyboard::F12) ],
-                [Key::Code(Keyboard::Keyboard6),Key::Code(Keyboard::UpArrow)  ,Key::Code(Keyboard::Keyboard7),Key::Code(Keyboard::Keyboard8),Key::Code(Keyboard::Keyboard9),Key::Code(Keyboard::Keyboard0)],
-                [Key::Code(Keyboard::LeftArrow)  ,Key::Code(Keyboard::DownArrow),Key::Code(Keyboard::RightArrow) ,Key::Code(Keyboard::PageUp),Key::Code(Keyboard::PageDown),Key::Code(Keyboard::Minus) ],
-                [Key::Code(Keyboard::DeleteForward),Key::Code(Keyboard::Home),Key::Code(Keyboard::End)   ,Key::NoKey           ,Key::NoKey              ,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-            ],
-            [
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-            ]
-            ,
-            [
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-            ]
-        ]
-    ]
-}

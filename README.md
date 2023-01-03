@@ -24,10 +24,10 @@ cargo install probe-run
 
 ### debug
 ``` console
-cargo run
+cargo run --features model_ninja1 --no-default-features
 ```
 
 ### release
 ``` console
-cargo run -r
+cargo run -r --features model_ninja1 --no-default-features
 ```
