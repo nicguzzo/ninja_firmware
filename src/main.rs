@@ -37,11 +37,25 @@ mod right_side;
 use config_class::RawConfInterface;
 use right_side::RightSideI2C;
 
-const REPORT_BUFF_MAX:usize=42;
+#[cfg(feature="model_corne")]
 const COLS:usize=6;
+#[cfg(feature="model_corne")]
 const ROWS:usize=4;
+
+#[cfg(feature="model_ninja1")]
+const COLS:usize=6;
+#[cfg(feature="model_ninja1")]
+const ROWS:usize=5;
+
+#[cfg(feature="model_ninja2")]
+const COLS:usize=6;
+#[cfg(feature="model_ninja2")]
+const ROWS:usize=5;
+
+
 const LAYERS:usize=4;
 const SIDES:usize=2;
+const REPORT_BUFF_MAX:usize=42;
 const CONF_KEY_BYTES:usize=2; //bytes per key in conf report
 const EEPROM_MARK:u8 = 0xAB;
 const CONF_SIZE:usize=COLS*ROWS*LAYERS*SIDES*CONF_KEY_BYTES+2;//2 byte mark size
@@ -167,6 +181,8 @@ mod app {
         let mut led = gpioc.pc13.into_push_pull_output(&mut gpioc.crh).erase();
         led.set_high();
   
+        //key pins
+
         let row0 =gpiob.pb5.into_pull_up_input(&mut gpiob.crl).erase();
         let row1 =gpiob.pb6.into_pull_up_input(&mut gpiob.crl).erase();
         let row2 =gpiob.pb7.into_pull_up_input(&mut gpiob.crl).erase();
@@ -180,68 +196,20 @@ mod app {
         let col5 =  gpiob_pb4.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase();
         
         let layer:usize=0;
+        #[cfg(feature="model_corne")]
         let rows:Rows=[row0,row1,row2,row3];
+        #[cfg(feature="model_corne")]
+        let cols:Cols=[col0,col1,col2,col3,col4,col5];
+
+        #[cfg(any(feature="model_ninja1",feature="model_ninja2"))]
+        let rows:Rows=[row0,row1,row2,row3,row4];
+        #[cfg(any(feature="model_ninja1",feature="model_ninja2"))]
         let cols:Cols=[col0,col1,col2,col3,col4,col5];
 
         //keyboard matrix
         let matrices:Matrices=[[[0u8;KB_N_BYTES];2];SIDES];
         
-        let keys:Keys=[
-            [
-                [
-                    [Key::Code(Keyboard::Escape),Key::Code(Keyboard::Q),Key::Code(Keyboard::W),Key::Code(Keyboard::E),Key::Code(Keyboard::R),Key::Code(Keyboard::T)],
-                    [Key::Code(Keyboard::Tab),Key::Code(Keyboard::A),Key::Code(Keyboard::S),Key::Code(Keyboard::D),Key::Code(Keyboard::F),Key::Code(Keyboard::G)],
-                    [Key::Code(Keyboard::LeftShift),Key::Code(Keyboard::Z),Key::Code(Keyboard::X),Key::Code(Keyboard::C),Key::Code(Keyboard::V),Key::Code(Keyboard::B)],
-                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::Code(Keyboard::LeftControl),Key::Code(Keyboard::LeftGUI),Key::Layer ],
-                ],
-                [
-                    [Key::Code(Keyboard::F1),Key::Code(Keyboard::F2),Key::Code(Keyboard::F3),Key::Code(Keyboard::F4),Key::Code(Keyboard::F5),Key::Code(Keyboard::F6) ],
-                    [Key::Code(Keyboard::Keyboard1),Key::Code(Keyboard::Keyboard1),Key::Code(Keyboard::Keyboard2),Key::Code(Keyboard::Keyboard3),Key::Code(Keyboard::Keyboard4),Key::Code(Keyboard::Keyboard5)],
-                    [Key::Code(Keyboard::Backslash),Key::Code(Keyboard::Z),Key::Code(Keyboard::X) ,Key::Code(Keyboard::C), Key::Code(Keyboard::V) ,Key::Code(Keyboard::B)  ],
-                    [Key::NoKey,Key::NoKey,Key::NoKey ,Key::Code(Keyboard::LeftAlt),Key::Code(Keyboard::RightGUI),Key::Layer ],
-                ],
-                [
-                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                ]
-                ,
-                [
-                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                ]
-            ],
-            [
-                [
-                    [Key::Code(Keyboard::Y), Key::Code(Keyboard::U),Key::Code(Keyboard::I),Key::Code(Keyboard::O),Key::Code(Keyboard::P),Key::Code(Keyboard::DeleteBackspace) ],
-                    [Key::Code(Keyboard::H), Key::Code(Keyboard::J),Key::Code(Keyboard::K),Key::Code(Keyboard::L),Key::Code(Keyboard::Semicolon),Key::Code(Keyboard::Backslash) ],
-                    [Key::Code(Keyboard::N), Key::Code(Keyboard::M),Key::Code(Keyboard::Comma),Key::Code(Keyboard::LeftBrace),Key::Code(Keyboard::RightBrace),Key::Code(Keyboard::Apostrophe) ],
-                    [Key::Code(Keyboard::ReturnEnter),Key::Code(Keyboard::Space),Key::Code(Keyboard::Dot) ,Key::NoKey,Key::NoKey,Key::NoKey]
-                ],
-                [
-                    [Key::Code(Keyboard::F7)    ,Key::Code(Keyboard::F8)  ,Key::Code(Keyboard::F9)    ,Key::Code(Keyboard::F10)   ,Key::Code(Keyboard::F11)     ,Key::Code(Keyboard::F12) ],
-                    [Key::Code(Keyboard::Keyboard6),Key::Code(Keyboard::UpArrow)  ,Key::Code(Keyboard::Keyboard7),Key::Code(Keyboard::Keyboard8),Key::Code(Keyboard::Keyboard9),Key::Code(Keyboard::Keyboard0)],
-                    [Key::Code(Keyboard::LeftArrow)  ,Key::Code(Keyboard::DownArrow),Key::Code(Keyboard::RightArrow) ,Key::Code(Keyboard::PageUp),Key::Code(Keyboard::PageDown),Key::Code(Keyboard::Minus) ],
-                    [Key::Code(Keyboard::DeleteForward),Key::Code(Keyboard::Home),Key::Code(Keyboard::End)   ,Key::NoKey           ,Key::NoKey              ,Key::NoKey]
-                ],
-                [
-                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                ]
-                ,
-                [
-                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                ]
-            ]
-        ];
+        let keys:Keys=get_default_keys();
 
         let report_buff:ReportBuff = [Keyboard::NoEventIndicated;REPORT_BUFF_MAX];
         
@@ -777,3 +745,130 @@ fn read_conf_from_eeprom(keys:&mut Keys,eeprom:&mut EepromT){
         }
     }
 }*/
+#[cfg(feature="model_corne")]
+fn get_default_keys()->Keys{
+    [
+        [
+            [
+                [Key::Code(Keyboard::Escape),Key::Code(Keyboard::Q),Key::Code(Keyboard::W),Key::Code(Keyboard::E),Key::Code(Keyboard::R),Key::Code(Keyboard::T)],
+                [Key::Code(Keyboard::Tab),Key::Code(Keyboard::A),Key::Code(Keyboard::S),Key::Code(Keyboard::D),Key::Code(Keyboard::F),Key::Code(Keyboard::G)],
+                [Key::Code(Keyboard::LeftShift),Key::Code(Keyboard::Z),Key::Code(Keyboard::X),Key::Code(Keyboard::C),Key::Code(Keyboard::V),Key::Code(Keyboard::B)],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::Code(Keyboard::LeftControl),Key::Code(Keyboard::LeftGUI),Key::Layer ],
+            ],
+            [
+                [Key::Code(Keyboard::F1),Key::Code(Keyboard::F2),Key::Code(Keyboard::F3),Key::Code(Keyboard::F4),Key::Code(Keyboard::F5),Key::Code(Keyboard::F6) ],
+                [Key::Code(Keyboard::Keyboard1),Key::Code(Keyboard::Keyboard1),Key::Code(Keyboard::Keyboard2),Key::Code(Keyboard::Keyboard3),Key::Code(Keyboard::Keyboard4),Key::Code(Keyboard::Keyboard5)],
+                [Key::Code(Keyboard::Backslash),Key::Code(Keyboard::Z),Key::Code(Keyboard::X) ,Key::Code(Keyboard::C), Key::Code(Keyboard::V) ,Key::Code(Keyboard::B)  ],
+                [Key::NoKey,Key::NoKey,Key::NoKey ,Key::Code(Keyboard::LeftAlt),Key::Code(Keyboard::RightGUI),Key::Layer ],
+            ],
+            [
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+            ]
+            ,
+            [
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+            ]
+        ],
+        [
+            [
+                [Key::Code(Keyboard::Y), Key::Code(Keyboard::U),Key::Code(Keyboard::I),Key::Code(Keyboard::O),Key::Code(Keyboard::P),Key::Code(Keyboard::DeleteBackspace) ],
+                [Key::Code(Keyboard::H), Key::Code(Keyboard::J),Key::Code(Keyboard::K),Key::Code(Keyboard::L),Key::Code(Keyboard::Semicolon),Key::Code(Keyboard::Backslash) ],
+                [Key::Code(Keyboard::N), Key::Code(Keyboard::M),Key::Code(Keyboard::Comma),Key::Code(Keyboard::LeftBrace),Key::Code(Keyboard::RightBrace),Key::Code(Keyboard::Apostrophe) ],
+                [Key::Code(Keyboard::ReturnEnter),Key::Code(Keyboard::Space),Key::Code(Keyboard::Dot) ,Key::NoKey,Key::NoKey,Key::NoKey]
+            ],
+            [
+                [Key::Code(Keyboard::F7)    ,Key::Code(Keyboard::F8)  ,Key::Code(Keyboard::F9)    ,Key::Code(Keyboard::F10)   ,Key::Code(Keyboard::F11)     ,Key::Code(Keyboard::F12) ],
+                [Key::Code(Keyboard::Keyboard6),Key::Code(Keyboard::UpArrow)  ,Key::Code(Keyboard::Keyboard7),Key::Code(Keyboard::Keyboard8),Key::Code(Keyboard::Keyboard9),Key::Code(Keyboard::Keyboard0)],
+                [Key::Code(Keyboard::LeftArrow)  ,Key::Code(Keyboard::DownArrow),Key::Code(Keyboard::RightArrow) ,Key::Code(Keyboard::PageUp),Key::Code(Keyboard::PageDown),Key::Code(Keyboard::Minus) ],
+                [Key::Code(Keyboard::DeleteForward),Key::Code(Keyboard::Home),Key::Code(Keyboard::End)   ,Key::NoKey           ,Key::NoKey              ,Key::NoKey]
+            ],
+            [
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+            ]
+            ,
+            [
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+            ]
+        ]
+    ]
+}
+
+#[cfg(feature="model_ninja1")]
+fn get_default_keys()->Keys{
+    [
+        [
+            [
+                [Key::Code(Keyboard::Escape),Key::Code(Keyboard::Q),Key::Code(Keyboard::W),Key::Code(Keyboard::E),Key::Code(Keyboard::R),Key::Code(Keyboard::T)],
+                [Key::Code(Keyboard::Tab),Key::Code(Keyboard::A),Key::Code(Keyboard::S),Key::Code(Keyboard::D),Key::Code(Keyboard::F),Key::Code(Keyboard::G)],
+                [Key::Code(Keyboard::LeftShift),Key::Code(Keyboard::Z),Key::Code(Keyboard::X),Key::Code(Keyboard::C),Key::Code(Keyboard::V),Key::Code(Keyboard::B)],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::Code(Keyboard::LeftControl),Key::Code(Keyboard::LeftGUI),Key::Layer ],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+            ],
+            [
+                [Key::Code(Keyboard::F1),Key::Code(Keyboard::F2),Key::Code(Keyboard::F3),Key::Code(Keyboard::F4),Key::Code(Keyboard::F5),Key::Code(Keyboard::F6) ],
+                [Key::Code(Keyboard::Keyboard1),Key::Code(Keyboard::Keyboard1),Key::Code(Keyboard::Keyboard2),Key::Code(Keyboard::Keyboard3),Key::Code(Keyboard::Keyboard4),Key::Code(Keyboard::Keyboard5)],
+                [Key::Code(Keyboard::Backslash),Key::Code(Keyboard::Z),Key::Code(Keyboard::X) ,Key::Code(Keyboard::C), Key::Code(Keyboard::V) ,Key::Code(Keyboard::B)  ],
+                [Key::NoKey,Key::NoKey,Key::NoKey ,Key::Code(Keyboard::LeftAlt),Key::Code(Keyboard::RightGUI),Key::Layer ],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+            ],
+            [
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+            ]
+            ,
+            [
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+            ]
+        ],
+        [
+            [
+                [Key::Code(Keyboard::Y), Key::Code(Keyboard::U),Key::Code(Keyboard::I),Key::Code(Keyboard::O),Key::Code(Keyboard::P),Key::Code(Keyboard::DeleteBackspace) ],
+                [Key::Code(Keyboard::H), Key::Code(Keyboard::J),Key::Code(Keyboard::K),Key::Code(Keyboard::L),Key::Code(Keyboard::Semicolon),Key::Code(Keyboard::Backslash) ],
+                [Key::Code(Keyboard::N), Key::Code(Keyboard::M),Key::Code(Keyboard::Comma),Key::Code(Keyboard::LeftBrace),Key::Code(Keyboard::RightBrace),Key::Code(Keyboard::Apostrophe) ],
+                [Key::Code(Keyboard::ReturnEnter),Key::Code(Keyboard::Space),Key::Code(Keyboard::Dot) ,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+            ],
+            [
+                [Key::Code(Keyboard::F7)    ,Key::Code(Keyboard::F8)  ,Key::Code(Keyboard::F9)    ,Key::Code(Keyboard::F10)   ,Key::Code(Keyboard::F11)     ,Key::Code(Keyboard::F12) ],
+                [Key::Code(Keyboard::Keyboard6),Key::Code(Keyboard::UpArrow)  ,Key::Code(Keyboard::Keyboard7),Key::Code(Keyboard::Keyboard8),Key::Code(Keyboard::Keyboard9),Key::Code(Keyboard::Keyboard0)],
+                [Key::Code(Keyboard::LeftArrow)  ,Key::Code(Keyboard::DownArrow),Key::Code(Keyboard::RightArrow) ,Key::Code(Keyboard::PageUp),Key::Code(Keyboard::PageDown),Key::Code(Keyboard::Minus) ],
+                [Key::Code(Keyboard::DeleteForward),Key::Code(Keyboard::Home),Key::Code(Keyboard::End)   ,Key::NoKey           ,Key::NoKey              ,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+            ],
+            [
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+            ]
+            ,
+            [
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+                [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
+            ]
+        ]
+    ]
+}

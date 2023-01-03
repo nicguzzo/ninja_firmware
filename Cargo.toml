@@ -5,6 +5,11 @@ name = "ninja-firmware3"
 edition = "2021"
 version = "0.1.0"
 
+[features]
+
+model_corne = [] 
+model_ninja1 = [] 
+model_ninja2 = [] 
 
 [dependencies]
 cortex-m = { version = "0.7.6", features = ["critical-section-single-core"] }
