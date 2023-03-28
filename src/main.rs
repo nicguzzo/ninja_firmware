@@ -479,10 +479,11 @@ mod app {
                         State::SendKbInfo=>{
                             info!("idle SendKbInfo");
                             conf_report.packet[0]=0;//kbinfo
-                            conf_report.packet[1]=Ninja::SIDES as u8;
-                            conf_report.packet[2]=Ninja::LAYERS as u8;
-                            conf_report.packet[3]=Ninja::ROWS as u8;
-                            conf_report.packet[4]=Ninja::COLS as u8;
+                            conf_report.packet[1]=Ninja::MODEL as u8;
+                            conf_report.packet[2]=Ninja::SIDES as u8;
+                            conf_report.packet[3]=Ninja::LAYERS as u8;
+                            conf_report.packet[4]=Ninja::ROWS as u8;
+                            conf_report.packet[5]=Ninja::COLS as u8;
                             *state=State::SendReport;
                         },                        
                         State::ReceiveKeys(side,layer)=>{
