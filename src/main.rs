@@ -92,9 +92,10 @@ pub enum State{
     Idle,
     SendKbInfo,
     ReceiveKeys(u8,u8),
-    RequestKeys(u8,u8),
+    RequestKeys(u8,u8),    
     ResetEeprom,
-    SendReport
+    SaveEeprom,
+    SendReport,
 }
 
 pub struct I2cDevices {
@@ -105,7 +106,7 @@ pub struct I2cDevices {
 
 #[rtic::app(device = stm32f1xx_hal::pac)]
 mod app {
-    use crate::{*};
+    use crate::{*, eeprom::write_conf_to_eeprom};
     #[shared]
     struct Shared {        
         usb_dev: UsbDev<'static>,
@@ -415,6 +416,9 @@ mod app {
                         3=>{
                             *state=Some(State::ResetEeprom);
                         },
+                        4=>{
+                          *state=Some(State::SaveEeprom);
+                        },
                         _=>()
                     }
                 }
@@ -457,7 +461,7 @@ mod app {
             Ok(_)=>{
                 info!("secondary side found");
             },
-            Err(_)=>info!("eeprom read_byte error")
+            Err(_)=>info!("secondary side read_byte error")
         }
 
         cortex_m::asm::delay(ninja_kb.delay_eeprom_cycles);
@@ -477,7 +481,7 @@ mod app {
                 if let Some(state)=state{
                     match state{
                         State::SendKbInfo=>{
-                            info!("idle SendKbInfo");
+                            info!("SendKbInfo");
                             conf_report.packet[0]=0;//kbinfo
                             conf_report.packet[1]=Ninja::MODEL as u8;
                             conf_report.packet[2]=Ninja::SIDES as u8;
@@ -487,13 +491,13 @@ mod app {
                             *state=State::SendReport;
                         },                        
                         State::ReceiveKeys(side,layer)=>{
-                            info!("idle ReceiveKeys");
+                            info!("ReceiveKeys {}",&conf_report.packet);
                             deserialize_keys(&conf_report.packet,&mut ninja_kb.keys);
                             *state=State::Idle;
 
                         },
                         State::RequestKeys(side,layer)=>{
-                            info!("idle RequestKeys");
+                            info!("RequestKeys");
                             if (*side as usize) < Ninja::SIDES && (*layer as usize ) < Ninja::LAYERS{
                                 serialize_keys(*side,*layer,&ninja_kb.keys[*side as usize][*layer as usize],&mut conf_report.packet);
                                 *state=State::SendReport;
@@ -501,14 +505,19 @@ mod app {
                                 *state=State::Idle;
                             }
                         },
+                        State::SaveEeprom=>{
+                          info!("SaveEeprom");
+                          write_conf_to_eeprom(&mut ninja_kb.keys,&mut i2c_devices.eeprom,ninja_kb.delay_eeprom_cycles);
+                          *state=State::Idle;
+                        },
                         State::ResetEeprom=>{
-                            info!("idle ResetEeprom");
+                            info!("ResetEeprom");
                             #[cfg(feature="has_eeprom")]
                             eeprom::reset(&mut i2c_devices.eeprom);
                             *state=State::Idle;
                         },
                         State::SendReport=>{
-                            info!("idle SendReport");
+                            info!("SendReport");
                             //*state=State::Idle;
                         }
                         State::Idle=>{

@@ -11,15 +11,15 @@ impl KeyboardTrait for Ninja {
     const SECONDARY:usize=1;
 
     fn get_default_keys()->Keys{
-        [
-            [
-                [
+        [//sides
+            [//left side
+                [ //layer 0
                     [Key::Code(K::Escape),Key::Code(K::Q),Key::Code(K::W),Key::Code(K::E),Key::Code(K::R),Key::Code(K::T)],
                     [Key::Code(K::Tab),Key::Code(K::A),Key::Code(K::S),Key::Code(K::D),Key::Code(K::F),Key::Code(K::G)],
                     [Key::Code(K::LeftShift),Key::Code(K::Z),Key::Code(K::X),Key::Code(K::C),Key::Code(K::V),Key::Code(K::B)],
                     [Key::NoKey,Key::NoKey,Key::NoKey,Key::Code(K::LeftControl),Key::Code(K::LeftGUI),Key::Layer(LayerCMD::TMP(1)) ],
                 ],
-                [
+                [ //layer 1
                     [Key::Code(K::F1),Key::Code(K::F2),Key::Code(K::F3),Key::Code(K::F4),Key::Code(K::F5),Key::Code(K::F6) ],
                     [Key::Code(K::Backslash),Key::Code(K::Keyboard1),Key::Code(K::Keyboard2),Key::Code(K::Keyboard3),Key::Code(K::Keyboard4),Key::Code(K::Keyboard5)],
                     [Key::Code(K::CapsLock),Key::Code(K::Z),Key::Code(K::X) ,Key::Code(K::C), Key::Code(K::V) ,Key::Code(K::B)  ],
@@ -39,7 +39,7 @@ impl KeyboardTrait for Ninja {
                     [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
                 ]
             ],
-            [
+            [// right side 
                 [
                     [Key::Code(K::Y), Key::Code(K::U),Key::Code(K::I),Key::Code(K::O),Key::Code(K::P),Key::Code(K::DeleteBackspace) ],
                     [Key::Code(K::H), Key::Code(K::J),Key::Code(K::K),Key::Code(K::L),Key::Code(K::Semicolon),Key::Code(K::Backslash) ],
