@@ -38,14 +38,14 @@ pub fn update_kb_state(ninja_kb:&mut NinjaKb ,secondary_side:&mut SecondarySideI
         }
         ninja_kb.cols[col].set_high();
     }
-    /*match secondary_side.read_keys(){
+    match secondary_side.read_keys(){
         Ok(buffer) =>{
             ninja_kb.matrices[Ninja::SECONDARY][0]=buffer;
         },
         Err(_) =>{
             info!("i2c read/write error")
         }
-    }*/
+    }
     //info!("m{}",ninja_kb.matrices[Ninja::MAIN]);
     //info!("s{}",ninja_kb.matrices[Ninja::SECONDARY]);
     for side in 0..Ninja::SIDES{
