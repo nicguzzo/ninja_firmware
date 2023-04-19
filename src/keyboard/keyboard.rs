@@ -47,7 +47,7 @@ pub fn update_kb_state(ninja_kb:&mut NinjaKb ,secondary_side:&mut SecondarySideI
         }
     }
     //info!("m{}",ninja_kb.matrices[Ninja::MAIN]);
-    //info!("s{}",ninja_kb.matrices[Ninja::SECONDARY]);
+    //info!("s{}",ninja_kb.matrices[Ninja::SECONDARY][0]);
     for side in 0..Ninja::SIDES{
         let side2=Ninja::SIDES_A[side];
         for col in 0..Ninja::COLS  {

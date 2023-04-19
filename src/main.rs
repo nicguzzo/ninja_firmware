@@ -157,6 +157,7 @@ mod app {
         info!("LAYERS {}",Ninja::LAYERS);
         info!("MAIN {}",Ninja::MAIN);
         info!("SECONDARY {}",Ninja::SECONDARY);
+        info!("NBYTES {}",KB_N_BYTES);
 
           
         //key pins, this can't be defeined elsewehere, 'cause Peripheral move reasons...
@@ -186,15 +187,25 @@ mod app {
             gpioa.pa6.into_pull_up_input(&mut gpioa.crl).erase(),
             gpioa.pa7.into_pull_up_input(&mut gpioa.crl).erase(),
         ];
+
+        #[cfg(feature="model_ninja2")]
+        let rows:Rows=[
+            gpiob.pb5.into_pull_up_input(&mut gpiob.crl).erase(),
+            gpiob.pb6.into_pull_up_input(&mut gpiob.crl).erase(),
+            gpiob.pb7.into_pull_up_input(&mut gpiob.crl).erase(),
+            gpiob.pb8.into_pull_up_input(&mut gpiob.crh).erase(),
+            gpiob.pb9.into_pull_up_input(&mut gpiob.crh).erase()
+        ];
         
-        #[cfg(feature="model_ninja1")]
+        #[cfg(feature="model_ninja2")]
         let cols:Cols= [
+            
+            gpiob.pb12.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase(),            
+            gpiob.pb13.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase(),
+            gpiob.pb14.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase(),
+            gpiob.pb15.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase(),
             gpiob_pb3.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase(),
             gpiob_pb4.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase(),
-            gpiob.pb5.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase(),            
-            gpiob.pb6.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase(),
-            gpiob.pb7.into_push_pull_output_with_state(&mut gpiob.crl,PinState::High).erase(),
-            gpiob.pb8.into_push_pull_output_with_state(&mut gpiob.crh,PinState::High).erase(),
         ]; 
 
 
@@ -414,9 +425,11 @@ mod app {
                             *state=Some(State::RequestKeys(s.packet[1],s.packet[2]));
                         },
                         3=>{
+                          info!("read_report ResetEeprom");
                             *state=Some(State::ResetEeprom);
                         },
                         4=>{
+                          info!("read_report SaveEeprom");
                           *state=Some(State::SaveEeprom);
                         },
                         _=>()
@@ -513,7 +526,7 @@ mod app {
                         State::ResetEeprom=>{
                             info!("ResetEeprom");
                             #[cfg(feature="has_eeprom")]
-                            eeprom::reset(&mut i2c_devices.eeprom);
+                            eeprom::reset(&mut i2c_devices.eeprom,ninja_kb.delay_eeprom_cycles);
                             *state=State::Idle;
                         },
                         State::SendReport=>{

@@ -41,12 +41,16 @@ pub fn read_all(keys:&mut Keys,eeprom:&mut EepromT,delay_eeprom_cycles:u32){
     }
     info!("read conf from eeprom done.");
 }
-pub fn reset(eeprom:&mut EepromT){
+pub fn reset(eeprom:&mut EepromT,delay_eeprom_cycles:u32){
+    info!("reset conf from eeprom.");
     let memory_address = 0;
-    eeprom.write_byte(memory_address,0).unwrap();
+    //eeprom.write_byte(memory_address,0).unwrap();
+    let keys:Keys=Ninja::get_default_keys();
+    write_conf_to_eeprom(&keys,eeprom,delay_eeprom_cycles);
+    info!("reset conf from eeprom done.");
 }
 
-pub fn write_conf_to_eeprom(keys:&mut Keys,eeprom:&mut EepromT,delay:u32){
+pub fn write_conf_to_eeprom(keys:&Keys,eeprom:&mut EepromT,delay:u32){
     let mut bytes=[[0u8;PAGE_SIZE];CONF_PAGES];
     let mut i:usize=2;
     let mut p=0;
