@@ -75,7 +75,8 @@ type Layers = [Side;Ninja::LAYERS];
 type Keys   = [Layers;Ninja::SIDES];
 
 type ReportBuff=[Kc;REPORT_BUFF_MAX];
-type ReportBuffLayer=[(u8,u8,u8);REPORT_BUFF_MAX];
+
+type T_kbevents=[[[(Kc,u8); Ninja::COLS]; Ninja::ROWS];Ninja::SIDES];
 
 pub struct NinjaKb{
     rows:Rows,
@@ -86,7 +87,8 @@ pub struct NinjaKb{
     last_layer:usize,
     led:ErasedPin<Output<PushPull>>,
     report_buff:ReportBuff,    
-    report_buff_layer:ReportBuffLayer,
+    events:T_kbevents,
+    //report_buff_layer:ReportBuffLayer,
     delay_eeprom_cycles:u32,
 }
 pub enum State{
@@ -149,7 +151,19 @@ mod app {
         let (_gpioa_pa15, gpiob_pb3, gpiob_pb4) = afio.mapr.disable_jtag(gpioa.pa15, gpiob.pb3, gpiob.pb4);
         
         let mut led = gpioc.pc13.into_push_pull_output(&mut gpioc.crh).erase();
+
+        //let mut led0 = gpioc.pc14.into_push_pull_output(&mut gpioc.crh).erase();
+        //let mut led1 = gpioa.pa2.into_push_pull_output(&mut gpioa.crl).erase();
+        //let mut led2 = gpioa.pa6.into_push_pull_output(&mut gpioa.crl).erase();
+        //let mut led3 = gpiob.pb1.into_push_pull_output(&mut gpiob.crl).erase();
+        
         led.set_high();
+
+        //led0.set_high(); 
+        //led1.set_high();
+        //led2.set_high(); 
+        //led3.set_high(); 
+
       
 
         info!("MODEL {}",Ninja::MODEL);
@@ -216,7 +230,8 @@ mod app {
         let keys:Keys=Ninja::get_default_keys();
 
         let report_buff:ReportBuff = [Kc::NoEventIndicated;REPORT_BUFF_MAX];
-        let report_buff_layer:ReportBuffLayer = [(0,255,255);REPORT_BUFF_MAX];
+        let events:T_kbevents=[[[(Kc::NoEventIndicated,255); Ninja::COLS]; Ninja::ROWS];Ninja::SIDES];
+        //let report_buff_layer:ReportBuffLayer = [(0,255,255);REPORT_BUFF_MAX];
         
         info!("size {}",CONF_SIZE);
         
@@ -345,7 +360,8 @@ mod app {
             matrices,
             keys,
             report_buff,
-            report_buff_layer,
+            events,
+            //report_buff_layer,
             layer,
             last_layer,
             led,            

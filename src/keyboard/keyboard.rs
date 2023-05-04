@@ -113,7 +113,8 @@ pub fn update_kb_state(ninja_kb:&mut NinjaKb ,secondary_side:&mut SecondarySideI
                             if !duplicate && k< REPORT_BUFF_MAX {
                                 event=true;
                                 ninja_kb.report_buff[k]=code;
-                                ninja_kb.report_buff_layer[k]=(ninja_kb.layer as u8,row as u8,col as u8);
+                                ninja_kb.events[side][row][col]=(code,k as u8);
+                                //ninja_kb.report_buff_layer[k]=(ninja_kb.layer as u8,row as u8,col as u8);
                             }
                         }
                         _ =>()
@@ -125,35 +126,44 @@ pub fn update_kb_state(ninja_kb:&mut NinjaKb ,secondary_side:&mut SecondarySideI
                     //go through all layers to release previus keys
                     //for layer in 0..Ninja::LAYERS{
                       let layer=ninja_kb.layer;
-                      match ninja_kb.keys[side][layer][row][col]{
-                          Key::Layer(lcmd)=>{
-                              info!("released LayerCmd {}",lcmd);
-                              match lcmd{
-                                  LayerCMD::TMP(_l) => {
-                                      ninja_kb.layer=ninja_kb.last_layer;
-                                  },
-                                  _ => (),
-                              }
-                              event=false;
-                              continue;
-                          },
-                          Key::Code(code)=>{
-                              info!("released {}",code as u8);
-                              for i in 0..REPORT_BUFF_MAX{
-                                  if ninja_kb.report_buff[i]==code{
-                                      event=true;
-                                      ninja_kb.report_buff[i]=Kc::NoEventIndicated;
-                                      break;
-                                  }/*else if ninja_kb.report_buff_layer[i].1==row as u8 &&
-                                           ninja_kb.report_buff_layer[i].2==col as u8 {
-                                      event=true;
-                                      ninja_kb.report_buff[i]=Kc::NoEventIndicated;
-                                      ninja_kb.report_buff_layer[i]=(0,255,255);
-                                      break;
-                                  }*/
-                              }
-                          }
-                          _ =>()
+
+                      let code=ninja_kb.events[side][row][col];
+                      if code.0 != Kc::NoEventIndicated && (code.1 as usize) < REPORT_BUFF_MAX {
+                        event=true;
+                        ninja_kb.report_buff[code.1 as usize]=Kc::NoEventIndicated;
+                        break;
+                      }else{
+
+                        match ninja_kb.keys[side][layer][row][col]{
+                            Key::Layer(lcmd)=>{
+                                info!("released LayerCmd {}",lcmd);
+                                match lcmd{
+                                    LayerCMD::TMP(_l) => {
+                                        ninja_kb.layer=ninja_kb.last_layer;
+                                    },
+                                    _ => (),
+                                }
+                                event=false;
+                                continue;
+                            },
+                            Key::Code(code)=>{
+                                info!("released {}",code as u8);
+                                for i in 0..REPORT_BUFF_MAX{
+                                    if ninja_kb.report_buff[i]==code{
+                                        event=true;
+                                        ninja_kb.report_buff[i]=Kc::NoEventIndicated;
+                                        break;
+                                    }/*else if ninja_kb.report_buff_layer[i].1==row as u8 &&
+                                            ninja_kb.report_buff_layer[i].2==col as u8 {
+                                        event=true;
+                                        ninja_kb.report_buff[i]=Kc::NoEventIndicated;
+                                        ninja_kb.report_buff_layer[i]=(0,255,255);
+                                        break;
+                                    }*/
+                                }
+                            }
+                            _ =>()
+                        }
                       }
                     //}
                 }
