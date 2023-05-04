@@ -56,9 +56,9 @@ pub fn update_kb_state(ninja_kb:&mut NinjaKb ,secondary_side:&mut SecondarySideI
                 let byte=index>>3;
                 let bit=(index%8) as u8;
                 //pressed
-                let m1=ninja_kb.matrices[side2][0][byte] & (1<<bit);
-                let m2=ninja_kb.matrices[side2][1][byte] & (1<<bit);
-                if m1!=0 && m2==0{
+                let mat1=ninja_kb.matrices[side2][0][byte] & (1<<bit);
+                let mat2=ninja_kb.matrices[side2][1][byte] & (1<<bit);
+                if mat1!=0 && mat2==0{
                     ninja_kb.led.set_low();
                     match ninja_kb.keys[side][ninja_kb.layer][row][col]{
                         Key::Layer(lcmd)=>{
@@ -113,37 +113,49 @@ pub fn update_kb_state(ninja_kb:&mut NinjaKb ,secondary_side:&mut SecondarySideI
                             if !duplicate && k< REPORT_BUFF_MAX {
                                 event=true;
                                 ninja_kb.report_buff[k]=code;
+                                ninja_kb.report_buff_layer[k]=(ninja_kb.layer as u8,row as u8,col as u8);
                             }
                         }
                         _ =>()
                     }                        
                 }
                 //released
-                if m1==0 && m2!=0{
+                if mat1==0 && mat2!=0{
                     ninja_kb.led.set_high();
-                    match ninja_kb.keys[side][ninja_kb.layer][row][col]{
-                        Key::Layer(lcmd)=>{
-                            match lcmd{
-                                LayerCMD::TMP(_l) => {
-                                    ninja_kb.layer=ninja_kb.last_layer;
-                                },
-                                _ => (),
-                            }
-                            event=false;
-                            continue;
-                        },
-                        Key::Code(code)=>{
-                            info!("released {}",code as u8);
-                            for i in 0..REPORT_BUFF_MAX{
-                                if ninja_kb.report_buff[i]==code{
-                                    event=true;
-                                    ninja_kb.report_buff[i]=Kc::NoEventIndicated;
-                                    break;
-                                }
-                            }
-                        }
-                        _ =>()
-                    }
+                    //go through all layers to release previus keys
+                    //for layer in 0..Ninja::LAYERS{
+                      let layer=ninja_kb.layer;
+                      match ninja_kb.keys[side][layer][row][col]{
+                          Key::Layer(lcmd)=>{
+                              info!("released LayerCmd {}",lcmd);
+                              match lcmd{
+                                  LayerCMD::TMP(_l) => {
+                                      ninja_kb.layer=ninja_kb.last_layer;
+                                  },
+                                  _ => (),
+                              }
+                              event=false;
+                              continue;
+                          },
+                          Key::Code(code)=>{
+                              info!("released {}",code as u8);
+                              for i in 0..REPORT_BUFF_MAX{
+                                  if ninja_kb.report_buff[i]==code{
+                                      event=true;
+                                      ninja_kb.report_buff[i]=Kc::NoEventIndicated;
+                                      break;
+                                  }/*else if ninja_kb.report_buff_layer[i].1==row as u8 &&
+                                           ninja_kb.report_buff_layer[i].2==col as u8 {
+                                      event=true;
+                                      ninja_kb.report_buff[i]=Kc::NoEventIndicated;
+                                      ninja_kb.report_buff_layer[i]=(0,255,255);
+                                      break;
+                                  }*/
+                              }
+                          }
+                          _ =>()
+                      }
+                    //}
                 }
             }
         }

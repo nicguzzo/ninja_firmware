@@ -70,12 +70,12 @@ type Cols = [ErasedPin<Output<PushPull>>; Ninja::COLS];
 type Matrix= [u8;KB_N_BYTES];
 type Matrices=[[Matrix;2];Ninja::SIDES];
 
-type Side = [[Key; Ninja::COLS]; Ninja::ROWS];
-type Layers=[Side;Ninja::LAYERS];
-type Keys= [Layers;Ninja::SIDES];
+type Side   = [[Key; Ninja::COLS]; Ninja::ROWS];
+type Layers = [Side;Ninja::LAYERS];
+type Keys   = [Layers;Ninja::SIDES];
 
 type ReportBuff=[Kc;REPORT_BUFF_MAX];
-
+type ReportBuffLayer=[(u8,u8,u8);REPORT_BUFF_MAX];
 
 pub struct NinjaKb{
     rows:Rows,
@@ -86,6 +86,7 @@ pub struct NinjaKb{
     last_layer:usize,
     led:ErasedPin<Output<PushPull>>,
     report_buff:ReportBuff,    
+    report_buff_layer:ReportBuffLayer,
     delay_eeprom_cycles:u32,
 }
 pub enum State{
@@ -215,6 +216,7 @@ mod app {
         let keys:Keys=Ninja::get_default_keys();
 
         let report_buff:ReportBuff = [Kc::NoEventIndicated;REPORT_BUFF_MAX];
+        let report_buff_layer:ReportBuffLayer = [(0,255,255);REPORT_BUFF_MAX];
         
         info!("size {}",CONF_SIZE);
         
@@ -343,6 +345,7 @@ mod app {
             matrices,
             keys,
             report_buff,
+            report_buff_layer,
             layer,
             last_layer,
             led,            
