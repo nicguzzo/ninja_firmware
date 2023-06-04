@@ -24,7 +24,7 @@ impl KeyboardTrait for Ninja {
                     [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
                     [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
                     [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],
-                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::Code(K::LeftAlt),Key::Layer(LayerCMD::TMP(1)) ],
+                    [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::Code(K::LeftAlt),Key::Layer(LayerCMD::TMP(0)) ],
                 ],
                 [
                     [Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey,Key::NoKey],

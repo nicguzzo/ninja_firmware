@@ -65,6 +65,7 @@ type I2cProxy = shared_bus::I2cProxy<'static, shared_bus::AtomicCheckMutex<I2cT>
 
 type Rows = [ErasedPin<Input<PullUp>>; Ninja::ROWS];
 type Cols = [ErasedPin<Output<PushPull>>; Ninja::COLS];
+type Leds = [ErasedPin<Output<PushPull>>; 5];
 
 
 type Matrix= [u8;KB_N_BYTES];
@@ -85,11 +86,11 @@ pub struct NinjaKb{
     keys:Keys,
     layer:usize,
     last_layer:usize,
-    led:ErasedPin<Output<PushPull>>,
     report_buff:ReportBuff,    
     events:T_kbevents,
     //report_buff_layer:ReportBuffLayer,
     delay_eeprom_cycles:u32,
+    leds:Leds
 }
 pub enum State{
     Idle,
@@ -138,8 +139,10 @@ mod app {
                 .use_hse(8.MHz())
                 .sysclk(72.MHz())
                 .pclk1(48.MHz())
+                //.sysclk(48.MHz())
+                //.pclk1(24.MHz())
                 .freeze(&mut flash.acr);
-
+        
         assert!(clocks.usbclk_valid());
 
         let mut afio  = cx.device.AFIO.constrain();
@@ -150,20 +153,35 @@ mod app {
         //disable jtag pins
         let (_gpioa_pa15, gpiob_pb3, gpiob_pb4) = afio.mapr.disable_jtag(gpioa.pa15, gpiob.pb3, gpiob.pb4);
         
-        let mut led = gpioc.pc13.into_push_pull_output(&mut gpioc.crh).erase();
 
-        //let mut led0 = gpioc.pc14.into_push_pull_output(&mut gpioc.crh).erase();
-        //let mut led1 = gpioa.pa2.into_push_pull_output(&mut gpioa.crl).erase();
-        //let mut led2 = gpioa.pa6.into_push_pull_output(&mut gpioa.crl).erase();
-        //let mut led3 = gpiob.pb1.into_push_pull_output(&mut gpiob.crl).erase();
+        let sda = gpiob.pb11.into_alternate_open_drain(&mut gpiob.crh);
+        let scl = gpiob.pb10.into_alternate_open_drain(&mut gpiob.crh);
+
+        let mut led4 = gpioc.pc13.into_push_pull_output(&mut gpioc.crh).erase();
+
+        //let mut led0 = gpioc.pc14.into_open_drain_output_with_state(&mut gpioc.crh,PinState::High).erase();
         
-        led.set_high();
-
-        //led0.set_high(); 
-        //led1.set_high();
-        //led2.set_high(); 
-        //led3.set_high(); 
-
+        let mut led0 = gpioc.pc14.into_push_pull_output(&mut gpioc.crh).erase();
+        let mut led1 = gpioa.pa2.into_push_pull_output(&mut gpioa.crl).erase();
+        let mut led2 = gpioa.pa6.into_push_pull_output(&mut gpioa.crl).erase();
+        let mut led3 = gpiob.pb1.into_push_pull_output(&mut gpiob.crl).erase();
+        let mut leds=[led0,led1,led2,led3,led4];
+        
+        let ld:u8=2;
+        for j in 0..4 {
+          leds[j].set_high();
+          for _i in 0..ld {
+            cortex_m::asm::delay(clocks.sysclk().raw() / 100);          
+          }
+          leds[j].set_low();
+        }
+        for j in 0..4 {
+          leds[3-j].set_high();
+          for _i in 0..ld {
+            cortex_m::asm::delay(clocks.sysclk().raw() / 100);          
+          }
+          leds[3-j].set_low();
+        }
       
 
         info!("MODEL {}",Ninja::MODEL);
@@ -237,33 +255,40 @@ mod app {
         
         //i2c
         //let i2c=None;
-        led.set_low();                
+        leds[4].set_low();                
         for _i in 0..30 {
             cortex_m::asm::delay(clocks.sysclk().raw() / 100);
-            led.toggle();
+            leds[4].toggle();
         }
-        led.set_high();                
+        leds[4].set_high();                
         info!("Conf i2c.");
-        let sda = gpiob.pb11.into_alternate_open_drain(&mut gpiob.crh);
-        let scl = gpiob.pb10.into_alternate_open_drain(&mut gpiob.crh);
+        //let sda = gpiob.pb11.into_alternate_open_drain(&mut gpiob.crh);
+        //let scl = gpiob.pb10.into_alternate_open_drain(&mut gpiob.crh);
             
         let i2c = BlockingI2c::i2c2(
             cx.device.I2C2,
             (scl, sda),
+            /*Mode::Standard {
+              frequency: 1.kHz(),
+            },*/
             Mode::Fast {
+              frequency: 100.kHz(),
+              duty_cycle: DutyCycle::Ratio16to9,
+            },
+            /*Mode::Fast {
                 frequency: 400.kHz(),
                 duty_cycle: DutyCycle::Ratio16to9,
-            },
+            },*/
             clocks,
-            1000,
-            10,
-            1000,
-            1000,
+            1000,//start timeout
+            1, //start retries
+            100,//addr timeout
+            100,//data timeout
         );
 
         let i2c_bus: &'static _ =shared_bus::new_atomic_check!(I2cT = i2c).unwrap();
-        let secondary_side=SecondarySideI2C::new(i2c_bus.acquire_i2c());
-
+        let mut secondary_side=SecondarySideI2C::new(i2c_bus.acquire_i2c());
+        
         #[cfg(feature="has_eeprom")]
         let eeprom=eeprom::new_eeprom(i2c_bus.acquire_i2c());        
         
@@ -351,7 +376,7 @@ mod app {
         .build();
 
         info!("Usb done.");
-        led.set_high();
+        leds[4].set_high();
         let layer:usize=0;
         let last_layer:usize=0;
         let ninja_kb= NinjaKb{
@@ -364,7 +389,7 @@ mod app {
             //report_buff_layer,
             layer,
             last_layer,
-            led,            
+            leds,
             delay_eeprom_cycles:clocks.sysclk().raw()/50
         };
         let state=None;
@@ -487,7 +512,7 @@ mod app {
         let mut report_buff=cx.shared.report_buff;
         let mut conf_report=cx.shared.conf_report;
 
-        cortex_m::asm::delay(ninja_kb.delay_eeprom_cycles);
+        //cortex_m::asm::delay(ninja_kb.delay_eeprom_cycles);
         info!("read secondary_side keys");
         match i2c_devices.secondary_side.read_keys(){
             Ok(_)=>{
@@ -496,7 +521,7 @@ mod app {
             Err(_)=>info!("secondary side read_byte error")
         }
 
-        cortex_m::asm::delay(ninja_kb.delay_eeprom_cycles);
+        //cortex_m::asm::delay(ninja_kb.delay_eeprom_cycles);
         #[cfg(feature="has_eeprom")]
         eeprom::read_all(&mut ninja_kb.keys,&mut i2c_devices.eeprom,ninja_kb.delay_eeprom_cycles);
 

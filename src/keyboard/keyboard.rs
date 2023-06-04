@@ -43,7 +43,7 @@ pub fn update_kb_state(ninja_kb:&mut NinjaKb ,secondary_side:&mut SecondarySideI
             ninja_kb.matrices[Ninja::SECONDARY][0]=buffer;
         },
         Err(_) =>{
-            info!("i2c read/write error")
+            //info!("i2c read/write error")
         }
     }
     //info!("m{}",ninja_kb.matrices[Ninja::MAIN]);
@@ -59,7 +59,7 @@ pub fn update_kb_state(ninja_kb:&mut NinjaKb ,secondary_side:&mut SecondarySideI
                 let mat1=ninja_kb.matrices[side2][0][byte] & (1<<bit);
                 let mat2=ninja_kb.matrices[side2][1][byte] & (1<<bit);
                 if mat1!=0 && mat2==0{
-                    ninja_kb.led.set_low();
+                    ninja_kb.leds[4].set_low();
                     match ninja_kb.keys[side][ninja_kb.layer][row][col]{
                         Key::Layer(lcmd)=>{
                             info!("pressed LayerCmd {}",lcmd);
@@ -122,7 +122,7 @@ pub fn update_kb_state(ninja_kb:&mut NinjaKb ,secondary_side:&mut SecondarySideI
                 }
                 //released
                 if mat1==0 && mat2!=0{
-                    ninja_kb.led.set_high();
+                    ninja_kb.leds[4].set_high();
                     //go through all layers to release previus keys
                     //for layer in 0..Ninja::LAYERS{
                       let layer=ninja_kb.layer;
@@ -170,5 +170,10 @@ pub fn update_kb_state(ninja_kb:&mut NinjaKb ,secondary_side:&mut SecondarySideI
             }
         }
     }
+    for l in 0..4{
+      ninja_kb.leds[l].set_low();
+    }
+    ninja_kb.leds[ninja_kb.layer].set_high();
+    
     event
 }
